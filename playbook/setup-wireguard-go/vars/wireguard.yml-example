@@ -1,0 +1,47 @@
+---
+# WireGuard interface name
+wg_interface: wg0
+
+# WireGuard listen port on the server
+wg_port: 51820
+
+# WireGuard tunnel subnet (must not overlap with Azure VNet subnets)
+wg_subnet: "10.10.0.0/24"
+
+# WireGuard IP assigned to the server inside the tunnel
+wg_server_wg_ip: "10.10.0.1"
+
+# Peer tunnel IPs are auto-assigned from position in wireguard_peers group:
+# first peer -> 10.10.0.2, second -> 10.10.0.3, ...
+wg_peer_wg_ip_auto: true
+
+# Manual tunnel IP used only when wg_peer_wg_ip_auto is false (single-peer mode)
+wg_peer_wg_ip: "10.10.0.2"
+
+# Public-facing NIC name on the server (used for iptables NAT rules)
+# On Azure Ubuntu 24.04 this is typically eth0
+wg_server_public_nic: eth0
+
+# Directory where WireGuard keys and config are stored
+wg_config_dir: /etc/wireguard
+
+# PersistentKeepalive for peer (seconds); important for NAT traversal across regions
+wg_keepalive: 25
+
+# wireguard-go version to install (use "latest" or pin e.g. "0.0.20240909")
+wgg_version: "latest"
+
+# Go package path for wireguard-go
+wgg_go_package: "golang.zx2c4.com/wireguard/cmd/wireguard-go"
+
+# Install location for wireguard-go binary
+wgg_bin: /usr/local/bin/wireguard-go
+
+# Systemd service name (concrete, not a template)
+wgg_service_name: "wireguard-go-{{ wg_interface }}.service"
+
+# apt package for Go toolchain
+wgg_golang_apt: golang-go
+
+# Remove golang-go after building wireguard-go (saves ~300 MB)
+wgg_cleanup_golang: false

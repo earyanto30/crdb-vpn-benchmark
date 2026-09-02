@@ -1,0 +1,11 @@
+# Managed by Ansible — do not edit manually.
+
+[Interface]
+PrivateKey = {{ wg_peer_private_key }}
+
+[Peer]
+# WireGuard Server
+PublicKey           = {{ wg_server_public_key }}
+Endpoint            = {{ wg_server_public_ip }}:{{ wg_port }}
+AllowedIPs          = {{ wg_subnet }}
+PersistentKeepalive = {{ wg_keepalive }}

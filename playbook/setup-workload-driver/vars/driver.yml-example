@@ -1,0 +1,55 @@
+---
+# =============================================================================
+# Workload Driver — vars/driver.yml
+# Copy to vars/driver.yml and edit. This file is gitignored.
+# =============================================================================
+
+# ── Cockroach binary (same as cluster) ────────────────────────────────────
+driver_download_url: "https://binaries.cockroachdb.com/cockroach-v26.2.5.linux-amd64.tgz"
+driver_bin_path: /usr/local/bin/cockroach
+driver_force_reinstall: false
+
+# ── Cluster target (auto-resolved if empty) ────────────────────────────────
+# Leave empty → auto-resolve to crdb_main's ansible_host / public_ip.
+# Set explicitly to pin (e.g. WireGuard IP 10.10.0.1 when testing tunnel).
+driver_target_host: ""               # e.g. "4.193.214.79" or "10.10.0.1"
+driver_sql_port: 26257
+driver_http_port: 8080
+
+# ── TLS (always on) ───────────────────────────────────────────────────────
+# Driver reuses cluster CA + client certs. Certs are fetched from crdb_main
+# via Ansible and placed here. Must be readable by ansible_user.
+driver_certs_dir: /home/evan/cockroach-certs
+# Temporary staging on CA / controller (mirrors setup-cockroachdb)
+driver_tmp_bundle_dir: /tmp/crdb-driver-certs
+
+# ── Auth (production TLS + dbadmin) ───────────────────────────────────────
+driver_db_user: dbadmin
+driver_db_password: dbadmin
+
+# ── TPCC workload ─────────────────────────────────────────────────────────
+# Built-in cockroach workload. Pre-loaded in setup.yml, run in benchmark.yml.
+driver_tpcc_warehouses: 10
+driver_tpcc_concurrency: 10
+# Best-practice duration: 10m (TPC-C steady-state). Override e.g. 5m/30m.
+driver_tpcc_duration: "10m"
+driver_tpcc_tolerate_errors: true
+# ── TPCC load tuning (fastest INSERT, 10% → 100% speedup) ─────────────────
+# Max out driver ↔ cluster parallelism. Defaults:
+#   workers = warehouses * 10 (cockroach default) → 10 wh=100 workers, 100 wh=1000 workers
+#   init-conns = 64 (up from default 16) → more parallel INSERT connections
+#   data-loader = INSERT (offline, no GCS). Use IMPORT only if GCS creds available (fastest but needs cloud).
+# To maximize: increase init-conns to 64-128, workers to warehouses*10-20, and ensure driver VM has 4+ vCPU + 8GB.
+driver_tpcc_workers: 0                 # 0 = auto (warehouses*10), else explicit e.g. 100, 200, 1000
+driver_tpcc_init_conns: 64             # INSERT init connections (default cockroach 16 → 64 is 4x faster on 2-node)
+driver_tpcc_data_loader: "INSERT"      # INSERT (portable, no GCS) or IMPORT (GCS, fastest) or AUTO
+driver_tpcc_max_rate: 0                # Max ops/sec, 0 = unlimited (maximize)
+# Results
+driver_results_dir: /home/evan/workload-results
+# Extra workload args (appended verbatim) — e.g. "--scatter --partition-affinity 0,1"
+driver_tpcc_extra_args: ""
+
+# ── Benchmark behavior ────────────────────────────────────────────────────
+# Number of benchmark iterations per run (benchmark.yml runs once per invocation;
+# caller can loop externally)
+driver_benchmark_iterations: 1

@@ -1,0 +1,27 @@
+[Unit]
+Description=WireGuard userspace (wireguard-go) {{ wg_interface }}
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/dev/net/tun
+
+[Service]
+Type=simple
+Environment=WG_PROCESS_FOREGROUND=1
+ExecStart={{ wgg_bin }} -f {{ wg_interface }}
+ExecStartPost=/sbin/ip addr add {{ wg_addr }}/24 dev {{ wg_interface }}
+ExecStartPost=/sbin/ip link set up dev {{ wg_interface }}
+ExecStartPost=/usr/bin/wg setconf {{ wg_interface }} {{ wg_config_dir }}/{{ wg_interface }}.conf
+{% if wg_role == 'server' %}
+ExecStartPost=/sbin/iptables -A FORWARD -i {{ wg_interface }} -j ACCEPT
+ExecStartPost=/sbin/iptables -A FORWARD -o {{ wg_interface }} -j ACCEPT
+ExecStartPost=/sbin/iptables -t nat -A POSTROUTING -o {{ wg_server_public_nic }} -j MASQUERADE
+ExecStopPost=-/sbin/iptables -D FORWARD -i {{ wg_interface }} -j ACCEPT
+ExecStopPost=-/sbin/iptables -D FORWARD -o {{ wg_interface }} -j ACCEPT
+ExecStopPost=-/sbin/iptables -t nat -D POSTROUTING -o {{ wg_server_public_nic }} -j MASQUERADE
+{% endif %}
+ExecStopPost=-/sbin/ip link del dev {{ wg_interface }}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

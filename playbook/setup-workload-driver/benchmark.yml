@@ -1,0 +1,152 @@
+---
+# =============================================================================
+# benchmark.yml — Run TPC-C workload from driver (TLS, dbadmin, printed to terminal)
+#
+# Target group : workload_driver / driver
+# Run         : ansible-playbook -i inventory.yml benchmark.yml
+#             : ansible-playbook -i inventory.yml benchmark.yml -e driver_tpcc_duration=5m
+#
+# Scale: warehouses=10 (vars), concurrency=10, duration=10m (best-practice steady state)
+# TLS: always. Auth: dbadmin/dbadmin with ca.crt (password) or client cert if present.
+# Results: printed to terminal via debug + saved to driver_results_dir/*.log
+# =============================================================================
+
+- name: Run TPC-C benchmark (cockroach workload, TLS)
+  hosts: workload_driver
+  become: true
+  vars_files:
+    - vars/driver.yml
+
+  pre_tasks:
+    - name: Resolve target host
+      ansible.builtin.set_fact:
+        driver_resolved_target: >-
+          {{ driver_target_host if driver_target_host is defined and driver_target_host | length > 0
+             else hostvars[groups['crdb_main'][0]]['ansible_host'] | default(hostvars[groups['crdb_main'][0]]['public_ip']) }}
+      when: driver_target_host is not defined or driver_target_host | length == 0
+
+    - name: Set target fact when override provided
+      ansible.builtin.set_fact:
+        driver_resolved_target: "{{ driver_target_host }}"
+      when: driver_target_host is defined and driver_target_host | length > 0
+
+    - name: Show benchmark config
+      ansible.builtin.debug:
+        msg:
+          - "   Driver   : {{ inventory_hostname }}"
+          - "   Target   : {{ driver_resolved_target }}:{{ driver_sql_port }} (TLS, {{ driver_db_user }})"
+          - "   Warehouses: {{ driver_tpcc_warehouses }}  Concurrency: {{ driver_tpcc_concurrency }}  Duration: {{ driver_tpcc_duration }}"
+          - "   Results  : {{ driver_results_dir }}/"
+
+  tasks:
+    - name: Ensure results directory exists
+      ansible.builtin.file:
+        path: "{{ driver_results_dir }}"
+        state: directory
+        owner: "{{ ansible_user | default('evan') }}"
+        group: "{{ ansible_user | default('evan') }}"
+        mode: "0755"
+
+    - name: Check cockroach binary
+      ansible.builtin.stat:
+        path: "{{ driver_bin_path }}"
+      register: _bench_bin
+
+    - name: Fail if binary missing (run setup.yml first)
+      ansible.builtin.fail:
+        msg: "{{ driver_bin_path }} missing — run setup.yml first."
+      when: not _bench_bin.stat.exists
+
+    - name: Wait for SQL port
+      ansible.builtin.wait_for:
+        host: "{{ driver_resolved_target }}"
+        port: "{{ driver_sql_port }}"
+        timeout: 60
+
+    - name: Verify TPCC data present before run
+      ansible.builtin.shell: |
+        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout 15 {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} \
+          --host={{ driver_resolved_target }}:{{ driver_sql_port }} \
+          --user={{ driver_db_user }} \
+          --execute="SELECT count(*) FROM tpcc.warehouse;" 2>&1 | tr -d ' \r' | grep -E '^[0-9]+$' | tail -n1
+      args:
+        executable: /bin/bash
+      register: _bench_warehouses
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if TPCC not loaded
+      ansible.builtin.fail:
+        msg: "TPCC not loaded (warehouses={{ _bench_warehouses.stdout | trim }}, expected {{ driver_tpcc_warehouses }}). Run setup.yml first."
+      when: _bench_warehouses.stdout | trim | int != driver_tpcc_warehouses | int
+
+    - name: Build workload URI (TLS + password, Q5 — always TLS + dbadmin)
+      ansible.builtin.set_fact:
+        _tpcc_uri: "postgres://{{ driver_db_user }}:{{ driver_db_password }}@{{ driver_resolved_target }}:{{ driver_sql_port }}/tpcc?sslmode=require&sslrootcert={{ driver_certs_dir }}/ca.crt"
+        _tpcc_hist: "{{ driver_results_dir }}/tpcc-{{ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ') }}.hist.json"
+        _tpcc_log: "{{ driver_results_dir }}/tpcc-{{ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ') }}.log"
+
+    - name: Show URI (password redacted)
+      ansible.builtin.debug:
+        msg: "   URI: postgres://{{ driver_db_user }}:****@{{ driver_resolved_target }}:{{ driver_sql_port }}/tpcc?sslmode=require&sslrootcert={{ driver_certs_dir }}/ca.crt"
+
+    # ── Run TPC-C (warehouses=10, concurrency=10, duration=10m) ──────────
+    # Best-practice: duration 10m ensures steady-state (TPC-C spec warmup ~2m + measurement 10m).
+    # concurrency=10 matches scale/warehouses per your spec, tolerate-errors for cross-region.
+    - name: Run TPCC workload (concurrency={{ driver_tpcc_concurrency }}, duration={{ driver_tpcc_duration }}, warehouses={{ driver_tpcc_warehouses }})
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "[{{ lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ') }}] Starting TPCC: warehouses={{ driver_tpcc_warehouses }} concurrency={{ driver_tpcc_concurrency }} duration={{ driver_tpcc_duration }} target={{ driver_resolved_target }} (TLS dbadmin)"
+        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout {{ (driver_tpcc_duration | regex_replace('m','') | int * 60 + 300) }}s {{ driver_bin_path }} workload run tpcc \
+          --warehouses={{ driver_tpcc_warehouses }} \
+          --concurrency={{ driver_tpcc_concurrency }} \
+          --duration={{ driver_tpcc_duration }} \
+          {{ '--tolerate-errors' if driver_tpcc_tolerate_errors | bool else '' }} \
+          --histograms={{ _tpcc_hist }} \
+          {{ driver_tpcc_extra_args }} \
+          "{{ _tpcc_uri }}" 2>&1 | tee {{ _tpcc_log }}
+        rc=${PIPESTATUS[0]}
+        echo "WORKLOAD_RC:$rc"
+        exit $rc
+      args:
+        executable: /bin/bash
+      register: _tpcc_run
+      changed_when: true
+      failed_when: false
+      # duration 10m + 5m slack for histograms flush
+
+    - name: Print workload results to terminal (Q4)
+      ansible.builtin.debug:
+        msg: "{{ _tpcc_run.stdout_lines }}"
+
+    - name: Save summary tail to terminal
+      ansible.builtin.shell: |
+        echo "=== TPCC SUMMARY ==="; tail -n 100 {{ _tpcc_log }} 2>/dev/null | cat; echo "=== histograms: {{ _tpcc_hist }} ==="; wc -l {{ _tpcc_hist }} 2>/dev/null || echo "no hist"
+      args:
+        executable: /bin/bash
+      register: _tpcc_summary
+      changed_when: false
+      failed_when: false
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg: "{{ _tpcc_summary.stdout_lines }}"
+
+    - name: Warn on workload failure (still prints)
+      ansible.builtin.debug:
+        msg: "Workload exited rc={{ _tpcc_run.rc }} — see {{ _tpcc_log }} (may contain tolerate-errors)"
+      when: _tpcc_run.rc != 0
+
+    - name: Collect result files list
+      ansible.builtin.shell: |
+        ls -lh {{ driver_results_dir }}/ | tail -n 20; echo "---"; cat {{ driver_results_dir }}/tpcc-*.log 2>/dev/null | grep -E 'tpmC|Efficiency|Warehouses|Duration' | tail -n 30
+      args:
+        executable: /bin/bash
+      register: _tpcc_files
+      changed_when: false
+      failed_when: false
+
+    - name: Show result files
+      ansible.builtin.debug:
+        msg: "{{ _tpcc_files.stdout_lines }}"

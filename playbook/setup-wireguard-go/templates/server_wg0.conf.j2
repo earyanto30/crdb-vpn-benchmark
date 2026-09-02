@@ -1,0 +1,7 @@
+# Managed by Ansible — do not edit manually.
+# Run join-peer.yml to add new peers; they will be appended below.
+# This file is read by 'wg setconf' on service (re)start — no Address/PostUp/PostDown allowed.
+
+[Interface]
+PrivateKey = {{ wg_server_private_key }}
+ListenPort = {{ wg_port }}

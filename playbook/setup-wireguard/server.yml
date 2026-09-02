@@ -1,0 +1,109 @@
+---
+# =============================================================================
+# server.yml — Install and initialise a WireGuard server
+#
+# Target host group : wireguard_server
+# Run               : ansible-playbook -i <inventory> server.yml
+# =============================================================================
+
+- name: Setup WireGuard server
+  hosts: wireguard_server
+  become: true
+  vars_files:
+    - vars/wireguard.yml
+
+  tasks:
+    - name: Install WireGuard and required packages
+      ansible.builtin.apt:
+        name:
+          - wireguard
+          - wireguard-tools
+          - iptables
+        state: present
+        update_cache: true
+
+    - name: Generate WireGuard server private key
+      ansible.builtin.shell:
+        cmd: wg genkey | tee {{ wg_config_dir }}/server_private.key | wg pubkey > {{ wg_config_dir }}/server_public.key
+        creates: "{{ wg_config_dir }}/server_private.key"
+
+    - name: Set strict permissions on private key
+      ansible.builtin.file:
+        path: "{{ wg_config_dir }}/server_private.key"
+        mode: "0600"
+        owner: root
+        group: root
+
+    - name: Set read permissions on public key
+      ansible.builtin.file:
+        path: "{{ wg_config_dir }}/server_public.key"
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: Read server private key
+      ansible.builtin.slurp:
+        src: "{{ wg_config_dir }}/server_private.key"
+      register: _server_private_key_b64
+
+    - name: Set server key facts
+      ansible.builtin.set_fact:
+        wg_server_private_key: "{{ _server_private_key_b64.content | b64decode | trim }}"
+
+    - name: Deploy WireGuard server config
+      ansible.builtin.template:
+        src: templates/server_wg0.conf.j2
+        dest: "{{ wg_config_dir }}/wg0.conf"
+        mode: "0600"
+        owner: root
+        group: root
+      notify: Restart WireGuard
+
+    - name: Enable IPv4 forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        state: present
+        sysctl_set: true
+        reload: true
+
+    - name: Check UFW status
+      ansible.builtin.command: ufw status
+      register: _ufw_status
+      changed_when: false
+      failed_when: false
+
+    - name: Allow WireGuard port through UFW
+      community.general.ufw:
+        rule: allow
+        port: "{{ wg_port }}"
+        proto: udp
+      when: "'active' in _ufw_status.stdout"
+
+    - name: Enable and start WireGuard service
+      ansible.builtin.systemd:
+        name: "wg-quick@{{ wg_interface }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Fetch server public key to controller
+      ansible.builtin.fetch:
+        src: "{{ wg_config_dir }}/server_public.key"
+        dest: "{{ playbook_dir }}/tmp/server_public.key"
+        flat: true
+
+    - name: Print server WireGuard info
+      ansible.builtin.debug:
+        msg:
+          - "   WireGuard server is running"
+          - "   Tunnel IP  : {{ wg_server_wg_ip }}/24"
+          - "   Listen port: {{ wg_port }}/udp"
+          - "   Public key : {{ lookup('file', playbook_dir + '/tmp/server_public.key') }}"
+          - "   Run join-peer.yml to add peers."
+
+  handlers:
+    - name: Restart WireGuard
+      ansible.builtin.systemd:
+        name: "wg-quick@{{ wg_interface }}"
+        state: restarted

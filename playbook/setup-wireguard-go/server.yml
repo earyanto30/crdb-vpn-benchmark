@@ -1,0 +1,152 @@
+---
+# =============================================================================
+# server.yml — Install and initialise a WireGuard server (userspace wireguard-go)
+#
+# Target host group : wireguard_server
+# Run               : ansible-playbook -i <inventory> server.yml
+# =============================================================================
+
+- name: Setup WireGuard server (userspace wireguard-go)
+  hosts: wireguard_server
+  become: true
+  vars_files:
+    - vars/wireguard.yml
+  vars:
+    wg_role: server
+    wg_addr: "{{ wg_server_wg_ip }}"
+
+  tasks:
+    - name: Install WireGuard tools, iptables, and Go toolchain
+      ansible.builtin.apt:
+        name:
+          - wireguard-tools
+          - iptables
+          - "{{ wgg_golang_apt }}"
+        state: present
+        update_cache: true
+
+    - name: Build wireguard-go binary
+      ansible.builtin.shell:
+        cmd: |
+          GOBIN={{ wgg_bin | dirname }} go install {{ wgg_go_package }}@{{ 'latest' if wgg_version == 'latest' else 'v' + wgg_version }}
+          mv -f {{ wgg_bin | dirname }}/wireguard {{ wgg_bin }}
+        creates: "{{ wgg_bin }}"
+      environment:
+        PATH: "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      changed_when: true
+
+    - name: Verify wireguard-go binary exists and is executable
+      ansible.builtin.stat:
+        path: "{{ wgg_bin }}"
+      register: _wgg_bin_stat
+
+    - name: Fail if wireguard-go binary is missing
+      ansible.builtin.fail:
+        msg: "wireguard-go binary not found at {{ wgg_bin }} after build"
+      when: not _wgg_bin_stat.stat.exists and not ansible_check_mode
+
+    - name: Optionally remove Go toolchain to save space
+      ansible.builtin.apt:
+        name: "{{ wgg_golang_apt }}"
+        state: absent
+        autoremove: true
+      when: wgg_cleanup_golang | bool
+
+    - name: Generate WireGuard server private key
+      ansible.builtin.shell:
+        cmd: wg genkey | tee {{ wg_config_dir }}/server_private.key | wg pubkey > {{ wg_config_dir }}/server_public.key
+        creates: "{{ wg_config_dir }}/server_private.key"
+
+    - name: Set strict permissions on private key
+      ansible.builtin.file:
+        path: "{{ wg_config_dir }}/server_private.key"
+        mode: "0600"
+        owner: root
+        group: root
+
+    - name: Set read permissions on public key
+      ansible.builtin.file:
+        path: "{{ wg_config_dir }}/server_public.key"
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: Read server private key
+      ansible.builtin.slurp:
+        src: "{{ wg_config_dir }}/server_private.key"
+      register: _server_private_key_b64
+
+    - name: Set server key facts
+      ansible.builtin.set_fact:
+        wg_server_private_key: "{{ _server_private_key_b64.content | b64decode | trim }}"
+
+    - name: Deploy WireGuard server config
+      ansible.builtin.template:
+        src: templates/server_wg0.conf.j2
+        dest: "{{ wg_config_dir }}/{{ wg_interface }}.conf"
+        mode: "0600"
+        owner: root
+        group: root
+      notify: Restart WireGuard
+
+    - name: Deploy wireguard-go systemd unit
+      ansible.builtin.template:
+        src: templates/wireguard-go.service.j2
+        dest: "/etc/systemd/system/{{ wgg_service_name }}"
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart WireGuard
+
+    - name: Enable IPv4 forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        state: present
+        sysctl_set: true
+        reload: true
+
+    - name: Check UFW status
+      ansible.builtin.command: ufw status
+      register: _ufw_status
+      changed_when: false
+      failed_when: false
+
+    - name: Allow WireGuard port through UFW
+      community.general.ufw:
+        rule: allow
+        port: "{{ wg_port }}"
+        proto: udp
+      when: "'active' in _ufw_status.stdout"
+
+    - name: Enable and start wireguard-go service
+      ansible.builtin.systemd:
+        name: "{{ wgg_service_name }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Fetch server public key to controller
+      ansible.builtin.fetch:
+        src: "{{ wg_config_dir }}/server_public.key"
+        dest: "{{ playbook_dir }}/tmp/server_public.key"
+        flat: true
+
+    - name: Print server WireGuard info
+      ansible.builtin.debug:
+        msg:
+          - "   WireGuard server (wireguard-go) is running"
+          - "   Tunnel IP  : {{ wg_server_wg_ip }}/24"
+          - "   Listen port: {{ wg_port }}/udp"
+          - "   Public key : {{ lookup('file', playbook_dir + '/tmp/server_public.key') }}"
+          - "   Run join-peer.yml to add peers."
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart WireGuard
+      ansible.builtin.systemd:
+        name: "{{ wgg_service_name }}"
+        state: restarted

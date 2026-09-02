@@ -1,0 +1,18 @@
+# Copy this file to terraform.tfvars and fill in your values.
+
+# Your SSH public key (required)
+ssh_public_key = "ssh-ed25519 AAAA... evan@hostname"
+
+# Per-VM configuration now lives in vm-crdb-*.tf.
+# Edit those files to change region / CIDR per VM.
+#   vm-crdb-lease-sea-01.tf   — CRDB leaseholder n1 (SEA)
+#   vm-crdb-replica-ea-01.tf  — CRDB replica n2 (EA)
+#   vm-crdb-driver-sea-01.tf  — workload driver (co-located SEA, shares SEA VNet)
+
+# Optional overrides (defaults shown)
+# rg_location         = "southeastasia"
+# resource_group_name = "rg-crdbvpnbench-dev"
+# vm_size             = "Standard_F2s_v2"
+# admin_username      = "evan"
+# os_disk_size_gb     = 30
+# ssh_private_key_path = "~/.ssh/id_ed25519"

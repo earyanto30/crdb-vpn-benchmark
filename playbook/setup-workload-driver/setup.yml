@@ -1,0 +1,434 @@
+---
+# =============================================================================
+# setup.yml — Provision workload driver VM and pre-load TPC-C
+#
+# Target group : workload_driver / driver (vm-crdb-driver-sea-01)
+#               + crdb_main (for cert distribution, ephemeral)
+# Run         : ansible-playbook -i inventory.yml setup.yml
+#
+# What it does:
+#   1) Installs cockroach binary (same version as cluster, TLS-only)
+#   2) Fetches CA + client certs from crdb_main and installs to driver_certs_dir
+#   3) Verifies TLS connectivity as dbadmin/dbadmin
+#   4) Pre-loads TPC-C fixtures (warehouses=10) idempotently
+# =============================================================================
+
+# ── Play 0 — Stage driver certs on controller from crdb_main (CA) ──────────
+- name: Stage driver TLS certs from crdb_main
+  hosts: crdb_main
+  become: true
+  vars_files:
+    - vars/driver.yml
+
+  tasks:
+    - name: Check CA certificate exists on crdb_main
+      ansible.builtin.stat:
+        path: /var/lib/cockroach/certs/ca.crt
+      register: _driver_ca_crt
+
+    - name: Fail if CA missing (run setup-cockroachdb/create-cluster.yml first)
+      ansible.builtin.fail:
+        msg: "CA not found at /var/lib/cockroach/certs/ca.crt on {{ inventory_hostname }}. Bootstrap cluster first."
+      when: not _driver_ca_crt.stat.exists
+
+    - name: Check client.root cert/key (for cert auth)
+      ansible.builtin.stat:
+        path: "/var/lib/cockroach/certs/{{ item }}"
+      loop:
+        - client.root.crt
+        - client.root.key
+      register: _driver_client_root
+
+    - name: Check client.dbadmin cert (if pre-created)
+      ansible.builtin.stat:
+        path: /var/lib/cockroach/certs/client.dbadmin.crt
+      register: _driver_client_dbadmin_crt
+
+    - name: Create client cert for dbadmin if missing (enables cert+password-less)
+      ansible.builtin.command: >
+        /usr/local/bin/cockroach cert create-client {{ driver_db_user }}
+        --certs-dir=/var/lib/cockroach/certs
+        --ca-key=/var/lib/cockroach/ca/ca.key
+        --overwrite
+      when: not _driver_client_dbadmin_crt.stat.exists
+      changed_when: true
+      failed_when: false
+
+    - name: Ensure controller tmp dir for driver certs
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/tmp/driver-certs"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Fetch CA + client certs to controller
+      ansible.builtin.fetch:
+        src: "/var/lib/cockroach/certs/{{ item }}"
+        dest: "{{ playbook_dir }}/tmp/driver-certs/{{ item }}"
+        flat: true
+      loop:
+        - ca.crt
+        - client.root.crt
+        - client.root.key
+      when: item in ['ca.crt'] or _driver_client_root.results | selectattr('stat.exists') | list | length > 0
+      failed_when: false
+
+    - name: Fetch dbadmin client cert if created
+      ansible.builtin.fetch:
+        src: "/var/lib/cockroach/certs/client.{{ driver_db_user }}.crt"
+        dest: "{{ playbook_dir }}/tmp/driver-certs/client.{{ driver_db_user }}.crt"
+        flat: true
+      failed_when: false
+
+    - name: Fetch dbadmin client key if created
+      ansible.builtin.fetch:
+        src: "/var/lib/cockroach/certs/client.{{ driver_db_user }}.key"
+        dest: "{{ playbook_dir }}/tmp/driver-certs/client.{{ driver_db_user }}.key"
+        flat: true
+      failed_when: false
+
+- name: Provision workload driver (TPCC, TLS, dbadmin)
+  hosts: workload_driver
+  become: true
+  vars_files:
+    - vars/driver.yml
+
+  pre_tasks:
+    - name: Validate driver group
+      ansible.builtin.fail:
+        msg: "Group 'workload_driver' empty — check infra/azure/outputs.tf"
+      when: groups['workload_driver'] is not defined or groups['workload_driver'] | length == 0
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Resolve target host (auto if empty)
+      ansible.builtin.set_fact:
+        driver_resolved_target: >-
+          {{ driver_target_host if driver_target_host is defined and driver_target_host | length > 0
+             else hostvars[groups['crdb_main'][0]]['ansible_host'] | default(hostvars[groups['crdb_main'][0]]['public_ip']) }}
+      when: driver_target_host is not defined or driver_target_host | length == 0
+
+    - name: Set target host fact (when override provided)
+      ansible.builtin.set_fact:
+        driver_resolved_target: "{{ driver_target_host }}"
+      when: driver_target_host is defined and driver_target_host | length > 0
+
+    - name: Show resolved target
+      ansible.builtin.debug:
+        msg:
+          - "   Driver host    : {{ inventory_hostname }} ({{ ansible_host }})"
+          - "   Cluster target : {{ driver_resolved_target }}:{{ driver_sql_port }} (TLS, user={{ driver_db_user }})"
+          - "   Warehouses     : {{ driver_tpcc_warehouses }}, Concurrency: {{ driver_tpcc_concurrency }}, Duration: {{ driver_tpcc_duration }}"
+
+  tasks:
+    - name: Install required packages (curl, tar, ping, jq)
+      ansible.builtin.apt:
+        name:
+          - curl
+          - tar
+          - iputils-ping
+          - jq
+        state: present
+        update_cache: true
+
+    - name: Check existing cockroach binary
+      ansible.builtin.stat:
+        path: "{{ driver_bin_path }}"
+      register: _driver_bin_stat
+
+    - name: Check existing version
+      ansible.builtin.shell: |
+        {{ driver_bin_path }} version 2>&1 | head -n1
+      args:
+        executable: /bin/bash
+      register: _driver_existing_ver
+      changed_when: false
+      failed_when: false
+      when: _driver_bin_stat.stat.exists
+
+    - name: Create tmp download dir
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: cockroach-driver
+      register: _driver_tmpdir
+      when: not _driver_bin_stat.stat.exists or (driver_force_reinstall | bool)
+
+    - name: Download cockroach archive
+      ansible.builtin.get_url:
+        url: "{{ driver_download_url }}"
+        dest: "{{ _driver_tmpdir.path }}/cockroach.tgz"
+        mode: "0644"
+      when: not _driver_bin_stat.stat.exists or (driver_force_reinstall | bool)
+
+    - name: Extract archive
+      ansible.builtin.unarchive:
+        src: "{{ _driver_tmpdir.path }}/cockroach.tgz"
+        dest: "{{ _driver_tmpdir.path }}"
+        remote_src: true
+      when: not _driver_bin_stat.stat.exists or (driver_force_reinstall | bool)
+
+    - name: Find extracted binary
+      ansible.builtin.shell: |
+        find {{ _driver_tmpdir.path }} -type f -name "cockroach" | head -n1
+      args:
+        executable: /bin/bash
+      register: _driver_extracted_bin
+      changed_when: false
+      when: not _driver_bin_stat.stat.exists or (driver_force_reinstall | bool)
+
+    - name: Install binary to {{ driver_bin_path }}
+      ansible.builtin.copy:
+        src: "{{ _driver_extracted_bin.stdout | trim }}"
+        dest: "{{ driver_bin_path }}"
+        mode: "0755"
+        owner: root
+        group: root
+        remote_src: true
+      when: not _driver_bin_stat.stat.exists or (driver_force_reinstall | bool)
+
+    - name: Install GEOS libs if present
+      ansible.builtin.shell: |
+        lib=$(find {{ _driver_tmpdir.path }} -type d -name "lib" 2>/dev/null | head -n1)
+        if [ -n "$lib" ] && [ -d "$lib" ]; then
+          mkdir -p /usr/local/lib/cockroach
+          cp -r "$lib"/* /usr/local/lib/cockroach/ 2>/dev/null || true
+          ldconfig 2>/dev/null || true
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: true
+      failed_when: false
+      when: _driver_tmpdir.path is defined
+
+    - name: Remove tmp download dir
+      ansible.builtin.file:
+        path: "{{ _driver_tmpdir.path }}"
+        state: absent
+      when: _driver_tmpdir.path is defined
+
+    - name: Verify binary
+      ansible.builtin.shell: |
+        {{ driver_bin_path }} version 2>&1 | head -n1
+      args:
+        executable: /bin/bash
+      register: _driver_ver
+      changed_when: false
+      failed_when: false
+
+    - name: Show version
+      ansible.builtin.debug:
+        msg: "{{ _driver_ver.stdout }}"
+
+    - name: Ensure driver certs directory
+      ansible.builtin.file:
+        path: "{{ driver_certs_dir }}"
+        state: directory
+        owner: "{{ ansible_user | default('evan') }}"
+        group: "{{ ansible_user | default('evan') }}"
+        mode: "0700"
+
+    - name: Install CA cert from controller
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/tmp/driver-certs/ca.crt"
+        dest: "{{ driver_certs_dir }}/ca.crt"
+        mode: "0644"
+        owner: "{{ ansible_user | default('evan') }}"
+        group: "{{ ansible_user | default('evan') }}"
+
+    - name: Install client.root cert (if fetched)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/tmp/driver-certs/client.root.crt"
+        dest: "{{ driver_certs_dir }}/client.root.crt"
+        mode: "0644"
+        owner: "{{ ansible_user | default('evan') }}"
+        group: "{{ ansible_user | default('evan') }}"
+      failed_when: false
+
+    - name: Install client.root key (if fetched)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/tmp/driver-certs/client.root.key"
+        dest: "{{ driver_certs_dir }}/client.root.key"
+        mode: "0600"
+        owner: "{{ ansible_user | default('evan') }}"
+        group: "{{ ansible_user | default('evan') }}"
+      failed_when: false
+
+    - name: Install client.dbadmin cert (if fetched)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/tmp/driver-certs/client.{{ driver_db_user }}.crt"
+        dest: "{{ driver_certs_dir }}/client.{{ driver_db_user }}.crt"
+        mode: "0644"
+        owner: "{{ ansible_user | default('evan') }}"
+        group: "{{ ansible_user | default('evan') }}"
+      failed_when: false
+
+    - name: Install client.dbadmin key (if fetched)
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/tmp/driver-certs/client.{{ driver_db_user }}.key"
+        dest: "{{ driver_certs_dir }}/client.{{ driver_db_user }}.key"
+        mode: "0600"
+        owner: "{{ ansible_user | default('evan') }}"
+        group: "{{ ansible_user | default('evan') }}"
+      failed_when: false
+
+    - name: Ensure results directory
+      ansible.builtin.file:
+        path: "{{ driver_results_dir }}"
+        state: directory
+        owner: "{{ ansible_user | default('evan') }}"
+        group: "{{ ansible_user | default('evan') }}"
+        mode: "0755"
+
+    - name: Wait for SQL port on cluster
+      ansible.builtin.wait_for:
+        host: "{{ driver_resolved_target }}"
+        port: "{{ driver_sql_port }}"
+        timeout: 60
+
+    - name: Verify SQL connectivity (dbadmin/TLS)
+      ansible.builtin.shell: |
+        timeout 15 {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} \
+          --host={{ driver_resolved_target }}:{{ driver_sql_port }} \
+          --user={{ driver_db_user }} \
+          --execute="SELECT 1 AS ok;" 2>&1
+      args:
+        executable: /bin/bash
+      environment:
+        COCKROACH_PASSWORD: "{{ driver_db_password }}"
+      register: _driver_sql_ok
+      changed_when: false
+      failed_when: false
+
+    - name: Fallback — verify via ca.crt-only URL (if client cert missing)
+      ansible.builtin.shell: |
+        timeout 15 {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} \
+          --host={{ driver_resolved_target }} \
+          --user={{ driver_db_user }} \
+          --execute="SELECT 1;" 2>&1
+      args:
+        executable: /bin/bash
+      environment:
+        COCKROACH_PASSWORD: "{{ driver_db_password }}"
+      register: _driver_sql_ok2
+      changed_when: false
+      failed_when: false
+      when: _driver_sql_ok.rc != 0
+
+    - name: Fail if SQL not reachable
+      ansible.builtin.fail:
+        msg: |
+          SQL not reachable at {{ driver_resolved_target }}:{{ driver_sql_port }} as {{ driver_db_user }}.
+          First attempt rc={{ _driver_sql_ok.rc }} out={{ _driver_sql_ok.stdout | default('') }} err={{ _driver_sql_ok.stderr | default('') }}
+          Fallback rc={{ _driver_sql_ok2.rc | default('n/a') }}
+          Check certs in {{ driver_certs_dir }}/ and `journalctl -u cockroachdb` on crdb_main.
+      when: _driver_sql_ok.rc != 0 and (_driver_sql_ok2.rc is not defined or _driver_sql_ok2.rc != 0)
+
+    - name: Show SQL check
+      ansible.builtin.debug:
+        msg: "{{ _driver_sql_ok.stdout_lines | default(_driver_sql_ok2.stdout_lines) }}"
+
+    - name: Check if TPCC already loaded (warehouse count)
+      ansible.builtin.shell: |
+        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout 30 {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} \
+          --host={{ driver_resolved_target }}:{{ driver_sql_port }} \
+          --user={{ driver_db_user }} \
+          --execute="SELECT count(*) FROM tpcc.warehouse;" 2>&1 | tr -d ' \r' | grep -E '^[0-9]+$' | tail -n1
+      args:
+        executable: /bin/bash
+      register: _tpcc_count
+      changed_when: false
+      failed_when: false
+
+    - name: Show TPCC count
+      ansible.builtin.debug:
+        msg: "warehouse count: {{ _tpcc_count.stdout | default('0') | trim }} (expected {{ driver_tpcc_warehouses }})"
+
+    - name: Tune cluster for fast ingest (bulk I/O) before load
+      ansible.builtin.shell: |
+        COCKROACH_PASSWORD='{{ driver_db_password }}' {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} --host={{ driver_resolved_target }}:{{ driver_sql_port }} --user={{ driver_db_user }} \
+          --execute="SET CLUSTER SETTING bulkio.backup.proxy_file_writes.enabled = off; SET CLUSTER SETTING kv.bulk_io_write.max_rate = '2GiB'; SET CLUSTER SETTING kv.bulk_io_write.concurrent_addsstable_requests = 64;" 2>&1 | tail -n 5
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      when: _tpcc_count.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
+
+    - name: Load TPCC fixtures (warehouses={{ driver_tpcc_warehouses }}) — may take 5-15 min per 10 warehouses, 30-60m for 100
+      ansible.builtin.shell: |
+        set -o pipefail
+        # Use `workload init` with INSERT loader to avoid GCS dependency.
+        # `fixtures load` requires GCS credentials (gcs http transport) and fails offline:
+        #   failed to create google cloud client ... could not find default credentials
+        # `workload init --data-loader INSERT` generates data via INSERT, no cloud needed.
+        # --drop is required to allow scaling up (10 → 100) by dropping existing tpcc db.
+        # Tuned: --workers (warehouses*10 default) and --init-conns 64 (4x default 16) maximize driver→cluster throughput.
+        # For fastest: driver_tpcc_workers=0 (auto), driver_tpcc_init_conns=64-128, driver_tpcc_data_loader=INSERT (portable) or IMPORT (GCS, ~3x faster but needs cloud creds).
+        # Optional max-rate 0 = unlimited.
+        _workers_arg=""; if [ "{{ driver_tpcc_workers | default(0) }}" != "0" ]; then _workers_arg="--workers={{ driver_tpcc_workers }}"; fi
+        _max_rate_arg=""; if [ "{{ driver_tpcc_max_rate | default(0) }}" != "0" ]; then _max_rate_arg="--max-rate={{ driver_tpcc_max_rate }}"; fi
+        COCKROACH_PASSWORD='{{ driver_db_password }}' {{ driver_bin_path }} workload init tpcc \
+          --drop \
+          --data-loader {{ driver_tpcc_data_loader | default('INSERT') }} \
+          --warehouses={{ driver_tpcc_warehouses }} \
+          --init-conns={{ driver_tpcc_init_conns | default(64) }} \
+          $_workers_arg $_max_rate_arg {{ driver_tpcc_extra_args }} \
+          "postgres://{{ driver_db_user }}:{{ driver_db_password }}@{{ driver_resolved_target }}:{{ driver_sql_port }}/tpcc?sslmode=require&sslrootcert={{ driver_certs_dir }}/ca.crt" 2>&1 | tee {{ driver_results_dir }}/tpcc-load.log
+        echo "LOAD_RC:$?"
+      args:
+        executable: /bin/bash
+      register: _tpcc_load
+      changed_when: "'init completed' in _tpcc_load.stdout or 'Load finished' in _tpcc_load.stdout or _tpcc_load.rc == 0"
+      failed_when: false
+      when: _tpcc_count.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
+
+    - name: Restore cluster bulk settings after load
+      ansible.builtin.shell: |
+        COCKROACH_PASSWORD='{{ driver_db_password }}' {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} --host={{ driver_resolved_target }}:{{ driver_sql_port }} --user={{ driver_db_user }} \
+          --execute="SET CLUSTER SETTING bulkio.backup.proxy_file_writes.enabled = default; SET CLUSTER SETTING kv.bulk_io_write.max_rate = default; SET CLUSTER SETTING kv.bulk_io_write.concurrent_addsstable_requests = default;" 2>&1 | tail -n 5
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      when: _tpcc_count.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
+
+    - name: Show TPCC load tail (printed to terminal as requested)
+      ansible.builtin.debug:
+        msg: "{{ (_tpcc_load.stdout_lines | default([]))[-50:] }}"
+      when: _tpcc_load.stdout is defined
+
+    - name: Verify TPCC load succeeded
+      ansible.builtin.shell: |
+        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout 30 {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} \
+          --host={{ driver_resolved_target }}:{{ driver_sql_port }} \
+          --user={{ driver_db_user }} \
+          --execute="SELECT count(*) FROM tpcc.warehouse;" 2>&1 | tr -d ' \r' | grep -E '^[0-9]+$' | tail -n1
+      args:
+        executable: /bin/bash
+      register: _tpcc_verify
+      changed_when: false
+      failed_when: false
+      when: _tpcc_count.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
+
+    - name: Fail if TPCC warehouses != expected after load
+      ansible.builtin.fail:
+        msg: "TPCC load failed — expected {{ driver_tpcc_warehouses }} warehouses, got {{ _tpcc_verify.stdout | default('?') }}. See {{ driver_results_dir }}/tpcc-load.log"
+      when:
+        - _tpcc_count.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
+        - _tpcc_verify.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
+
+    - name: Done — driver ready
+      ansible.builtin.debug:
+        msg:
+          - "Driver setup complete on {{ inventory_hostname }}"
+          - "Target: {{ driver_resolved_target }}:{{ driver_sql_port }} (TLS, {{ driver_db_user }})"
+          - "TPCC warehouses: {{ driver_tpcc_warehouses }} ({{ 'already loaded' if _tpcc_count.stdout | trim | int == driver_tpcc_warehouses | int else 'loaded now' }})"
+          - "Run: ansible-playbook -i inventory.yml benchmark.yml"

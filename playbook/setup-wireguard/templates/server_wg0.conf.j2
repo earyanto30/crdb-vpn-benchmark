@@ -1,0 +1,15 @@
+# Managed by Ansible — do not edit manually.
+# Run join-peer.yml to add new peers; they will be appended below.
+
+[Interface]
+Address    = {{ wg_server_wg_ip }}/24
+ListenPort = {{ wg_port }}
+PrivateKey = {{ wg_server_private_key }}
+
+# Allow traffic forwarding through the tunnel and masquerade outbound packets
+PostUp   = iptables -A FORWARD -i {{ wg_interface }} -j ACCEPT
+PostUp   = iptables -A FORWARD -o {{ wg_interface }} -j ACCEPT
+PostUp   = iptables -t nat -A POSTROUTING -o {{ wg_server_public_nic }} -j MASQUERADE
+PostDown = iptables -D FORWARD -i {{ wg_interface }} -j ACCEPT
+PostDown = iptables -D FORWARD -o {{ wg_interface }} -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -o {{ wg_server_public_nic }} -j MASQUERADE

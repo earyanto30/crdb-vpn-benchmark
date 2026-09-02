@@ -1,0 +1,237 @@
+---
+# =============================================================================
+# join-peer.yml — Add VMs as WireGuard peers to an existing server
+#                 (userspace wireguard-go implementation)
+#
+# Target host groups : wireguard_server + wireguard_peers
+# Run               : ansible-playbook -i <inventory> join-peer.yml
+#
+# Peer tunnel IPs are auto-assigned by inventory position:
+#   first peer in wireguard_peers -> 10.10.0.2, second -> 10.10.0.3, ...
+#
+# Variables (override via -e or vars/wireguard.yml):
+#   wg_peer_wg_ip_auto   — enable auto IP assignment (default: true)
+#   wg_peer_wg_ip        — manual tunnel IP when wg_peer_wg_ip_auto=false
+#                          (single-peer mode, mirrors original playbook):
+#                            ansible-playbook join-peer.yml \
+#                              -e wg_peer_wg_ip_auto=false -e wg_peer_wg_ip=10.10.0.7
+# =============================================================================
+
+- name: Configure WireGuard peer and register it on the server
+  hosts: wireguard_peers
+  become: true
+  vars_files:
+    - vars/wireguard.yml
+  vars:
+    wg_role: peer
+    wg_addr: "{{ wg_peer_wg_ip }}"
+
+  tasks:
+    - name: Check server public key exists (run server.yml first)
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/tmp/server_public.key"
+      register: _server_pubkey_stat
+      delegate_to: localhost
+      become: false
+
+    - name: Fail if server public key is missing
+      ansible.builtin.fail:
+        msg: >
+          tmp/server_public.key not found.
+          Run server.yml first to generate and fetch the server public key.
+      when: not _server_pubkey_stat.stat.exists
+
+    - name: Read server public key from controller
+      ansible.builtin.set_fact:
+        wg_server_public_key: "{{ lookup('file', playbook_dir + '/tmp/server_public.key') | trim }}"
+
+    - name: Resolve WireGuard server public IP
+      ansible.builtin.set_fact:
+        wg_server_public_ip: "{{ hostvars[groups['wireguard_server'][0]]['ansible_host'] }}"
+
+    - name: Auto-assign peer tunnel IP from inventory index
+      ansible.builtin.set_fact:
+        wg_peer_wg_ip: "{{ wg_server_wg_ip | regex_replace('\\d+$', '') }}{{ groups['wireguard_peers'].index(inventory_hostname) + 2 }}"
+      when: wg_peer_wg_ip_auto | bool
+
+    - name: Install WireGuard tools, iptables, and Go toolchain
+      ansible.builtin.apt:
+        name:
+          - wireguard-tools
+          - iptables
+          - "{{ wgg_golang_apt }}"
+        state: present
+        update_cache: true
+
+    - name: Build wireguard-go binary
+      ansible.builtin.shell:
+        cmd: |
+          GOBIN={{ wgg_bin | dirname }} go install {{ wgg_go_package }}@{{ 'latest' if wgg_version == 'latest' else 'v' + wgg_version }}
+          mv -f {{ wgg_bin | dirname }}/wireguard {{ wgg_bin }}
+        creates: "{{ wgg_bin }}"
+      environment:
+        PATH: "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      changed_when: true
+
+    - name: Verify wireguard-go binary exists and is executable
+      ansible.builtin.stat:
+        path: "{{ wgg_bin }}"
+      register: _wgg_bin_stat
+
+    - name: Fail if wireguard-go binary is missing
+      ansible.builtin.fail:
+        msg: "wireguard-go binary not found at {{ wgg_bin }} after build"
+      when: not _wgg_bin_stat.stat.exists and not ansible_check_mode
+
+    - name: Optionally remove Go toolchain to save space
+      ansible.builtin.apt:
+        name: "{{ wgg_golang_apt }}"
+        state: absent
+        autoremove: true
+      when: wgg_cleanup_golang | bool
+
+    - name: Generate WireGuard peer private key
+      ansible.builtin.shell:
+        cmd: wg genkey | tee {{ wg_config_dir }}/peer_private.key | wg pubkey > {{ wg_config_dir }}/peer_public.key
+        creates: "{{ wg_config_dir }}/peer_private.key"
+
+    - name: Set strict permissions on peer private key
+      ansible.builtin.file:
+        path: "{{ wg_config_dir }}/peer_private.key"
+        mode: "0600"
+        owner: root
+        group: root
+
+    - name: Set read permissions on peer public key
+      ansible.builtin.file:
+        path: "{{ wg_config_dir }}/peer_public.key"
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: Read peer private key
+      ansible.builtin.slurp:
+        src: "{{ wg_config_dir }}/peer_private.key"
+      register: _peer_private_key_b64
+
+    - name: Read peer public key
+      ansible.builtin.slurp:
+        src: "{{ wg_config_dir }}/peer_public.key"
+      register: _peer_public_key_b64
+
+    - name: Set peer key facts
+      ansible.builtin.set_fact:
+        wg_peer_private_key: "{{ _peer_private_key_b64.content | b64decode | trim }}"
+        wg_peer_public_key:  "{{ _peer_public_key_b64.content  | b64decode | trim }}"
+
+    - name: Deploy WireGuard peer config
+      ansible.builtin.template:
+        src: templates/peer_wg0.conf.j2
+        dest: "{{ wg_config_dir }}/{{ wg_interface }}.conf"
+        mode: "0600"
+        owner: root
+        group: root
+      notify: Restart WireGuard
+
+    - name: Deploy wireguard-go systemd unit
+      ansible.builtin.template:
+        src: templates/wireguard-go.service.j2
+        dest: "/etc/systemd/system/{{ wgg_service_name }}"
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart WireGuard
+
+    - name: Enable and start wireguard-go on peer
+      ansible.builtin.systemd:
+        name: "{{ wgg_service_name }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Ensure tmp directory exists on controller
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/tmp"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+
+    - name: Fetch peer public key to controller
+      ansible.builtin.fetch:
+        src: "{{ wg_config_dir }}/peer_public.key"
+        dest: "{{ playbook_dir }}/tmp/{{ inventory_hostname }}_public.key"
+        flat: true
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart WireGuard
+      ansible.builtin.systemd:
+        name: "{{ wgg_service_name }}"
+        state: restarted
+
+# =============================================================================
+# Play 2 — Register the peer on the WireGuard server
+# =============================================================================
+- name: Register peers on WireGuard server
+  hosts: wireguard_server
+  become: true
+  vars_files:
+    - vars/wireguard.yml
+
+  tasks:
+    - name: Build peer registration list
+      ansible.builtin.set_fact:
+        wg_peer_registrations: "{{ wg_peer_registrations | default([]) + [{ 'name': item, 'public_key': lookup('file', playbook_dir + '/tmp/' + item + '_public.key') | trim, 'wg_ip': ((wg_server_wg_ip | regex_replace('\\d+$', '')) ~ (groups['wireguard_peers'].index(item) + 2)) if wg_peer_wg_ip_auto | bool else wg_peer_wg_ip }] }}"
+      loop: "{{ groups['wireguard_peers'] if wg_peer_wg_ip_auto | bool else [groups['wireguard_peers'][0]] }}"
+
+    - name: Add peer to running WireGuard instance (live, no downtime)
+      ansible.builtin.command:
+        cmd: >
+          wg set {{ wg_interface }}
+          peer {{ item.public_key }}
+          allowed-ips {{ item.wg_ip }}/32
+          persistent-keepalive {{ wg_keepalive }}
+      loop: "{{ wg_peer_registrations }}"
+      changed_when: true
+
+    - name: Check if peer is already in wg0.conf
+      ansible.builtin.command:
+        cmd: grep -qF "{{ item.public_key }}" {{ wg_config_dir }}/{{ wg_interface }}.conf
+      loop: "{{ wg_peer_registrations }}"
+      register: _peer_exists
+      changed_when: false
+      failed_when: false
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Append peer block to server wg0.conf
+      ansible.builtin.blockinfile:
+        path: "{{ wg_config_dir }}/{{ wg_interface }}.conf"
+        marker: "# {mark} PEER {{ item.name }}"
+        block: |
+          [Peer]
+          # {{ item.name }}
+          PublicKey           = {{ item.public_key }}
+          AllowedIPs          = {{ item.wg_ip }}/32
+          PersistentKeepalive = {{ wg_keepalive }}
+      loop: "{{ wg_peer_registrations }}"
+      loop_control:
+        label: "{{ item.name }}"
+        extended: true
+      when: _peer_exists.results[ansible_loop.index0].rc != 0
+
+    - name: Print peer registration info
+      ansible.builtin.debug:
+        msg:
+          - "   Peer registered on WireGuard server"
+          - "   Peer host      : {{ item.name }}"
+          - "   Peer tunnel IP : {{ item.wg_ip }}"
+          - "   Peer public key: {{ item.public_key }}"
+          - "   Test with      : ping {{ item.wg_ip }}"
+      loop: "{{ wg_peer_registrations }}"
+      loop_control:
+        label: "{{ item.name }}"

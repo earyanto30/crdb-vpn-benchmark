@@ -1,0 +1,444 @@
+---
+# =============================================================================
+# create-cluster.yml — Bootstrap the first CockroachDB node (production / TLS)
+#
+# Target host group : crdb_main   (inventory: infra/azure/outputs.tf → ansible_inventory)
+# Run               : ansible-playbook -i <inventory> create-cluster.yml
+#                   : ansible-playbook -i <inventory> create-cluster.yml -e crdb_advertise_mode=wireguard
+#
+# Scenarios (switched via vars/cockroach.yml):
+#   1) direct    — --advertise-addr and --join use the node's direct/public IP
+#                   (ansible_host / public_ip / ansible_default_ipv4.address)
+#   2) wireguard — --advertise-addr and --join use the WireGuard tunnel IP
+#                   (wg0 or wireguard-go interface). Ensure WireGuard is up first:
+#                   playbook/setup-wireguard/server.yml  or
+#                   playbook/setup-wireguard-go/server.yml
+#
+# Production-grade steps (mirrors scripts/install-cockroachdb.sh):
+#   dedicated cockroach:cockroach user, secure dirs, binary download,
+#   TLS CA + node + client certs, systemd unit with hardened limits, init, dbadmin user.
+# =============================================================================
+
+- name: Bootstrap CockroachDB cluster (production)
+  hosts: crdb_main
+  become: true
+  vars_files:
+    - vars/cockroach.yml
+
+  pre_tasks:
+    - name: Validate crdb_advertise_mode
+      ansible.builtin.fail:
+        msg: "crdb_advertise_mode must be 'direct' or 'wireguard' (got '{{ crdb_advertise_mode }}')"
+      when: crdb_advertise_mode not in ["direct", "wireguard"]
+
+    - name: Validate target group
+      ansible.builtin.fail:
+        msg: "Group 'crdb_main' is empty — check inventory (infra/azure/outputs.tf)"
+      when: groups['crdb_main'] is not defined or groups['crdb_main'] | length == 0
+
+  tasks:
+    - name: Use manual advertise host override if set
+      ansible.builtin.set_fact:
+        crdb_advertise_host: "{{ crdb_advertise_host_override }}"
+      when: crdb_advertise_host_override is defined and crdb_advertise_host_override | length > 0
+
+    - name: Detect WireGuard tunnel IP (wireguard mode)
+      ansible.builtin.shell: |
+        set -o pipefail
+        if [ -n "{{ crdb_wireguard_ip_override }}" ]; then
+          echo "{{ crdb_wireguard_ip_override }}"
+        else
+          ip -4 addr show {{ crdb_wireguard_interface }} 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1
+        fi
+      args:
+        executable: /bin/bash
+      register: _crdb_wg_ip
+      changed_when: false
+      failed_when: false
+      when:
+        - crdb_advertise_mode == "wireguard"
+        - crdb_advertise_host is not defined or crdb_advertise_host | length == 0
+
+    - name: Set advertise host from WireGuard detection
+      ansible.builtin.set_fact:
+        crdb_advertise_host: "{{ _crdb_wg_ip.stdout | trim }}"
+      when:
+        - crdb_advertise_mode == "wireguard"
+        - crdb_advertise_host is not defined or crdb_advertise_host | length == 0
+        - _crdb_wg_ip.stdout is defined
+        - _crdb_wg_ip.stdout | trim | length > 0
+
+    - name: Fail if WireGuard IP could not be detected
+      ansible.builtin.fail:
+        msg: >
+          Could not detect WireGuard IP from interface '{{ crdb_wireguard_interface }}'.
+          Ensure WireGuard is running (setup-wireguard/server.yml or setup-wireguard-go/server.yml),
+          or set crdb_wireguard_ip_override / crdb_advertise_host_override in vars/cockroach.yml.
+      when:
+        - crdb_advertise_mode == "wireguard"
+        - crdb_advertise_host is not defined or crdb_advertise_host | length == 0
+
+    - name: Set advertise host (direct mode — auto)
+      ansible.builtin.set_fact:
+        crdb_advertise_host: "{{ public_ip | default(ansible_host) if (public_ip is defined or ansible_host is defined and ansible_host is match('^\\d+\\.\\d+\\.\\d+\\.\\d+$')) else ansible_default_ipv4.address | default(ansible_host) }}"
+      when:
+        - crdb_advertise_mode == "direct"
+        - crdb_advertise_host is not defined or crdb_advertise_host | length == 0
+
+    - name: Show resolved advertise address
+      ansible.builtin.debug:
+        msg:
+          - "   Advertise mode : {{ crdb_advertise_mode }}"
+          - "   Advertise host : {{ crdb_advertise_host }}"
+          - "   Advertise addr : {{ crdb_advertise_host }}:{{ crdb_sql_port }}"
+          - "   HTTP addr      : {{ crdb_http_bind }}:{{ crdb_http_port }}"
+
+    - name: Build CockroachDB address facts
+      ansible.builtin.set_fact:
+        crdb_advertise_addr: "{{ crdb_advertise_host }}:{{ crdb_sql_port }}"
+        crdb_http_addr: "{{ crdb_http_bind }}:{{ crdb_http_port }}"
+        crdb_join_target: "{{ crdb_advertise_host }}:{{ crdb_sql_port }}"
+        crdb_hostname: "{{ ansible_hostname | default(inventory_hostname) }}"
+
+    - name: Create CockroachDB system group
+      ansible.builtin.group:
+        name: "{{ crdb_group }}"
+        system: true
+        state: present
+
+    - name: Create CockroachDB system user
+      ansible.builtin.user:
+        name: "{{ crdb_user }}"
+        group: "{{ crdb_group }}"
+        home: "{{ crdb_store_dir | dirname }}"
+        shell: /usr/sbin/nologin
+        system: true
+        create_home: false
+        comment: "CockroachDB Service Account"
+
+    - name: Ensure data store directory
+      ansible.builtin.file:
+        path: "{{ crdb_store_dir }}"
+        state: directory
+        owner: "{{ crdb_user }}"
+        group: "{{ crdb_group }}"
+        mode: "0750"
+
+    - name: Ensure certs directory (0700, cockroach:cockroach)
+      ansible.builtin.file:
+        path: "{{ crdb_certs_dir }}"
+        state: directory
+        owner: "{{ crdb_user }}"
+        group: "{{ crdb_group }}"
+        mode: "0700"
+
+    - name: Ensure CA directory (0700, root:root — CA key stays here)
+      ansible.builtin.file:
+        path: "{{ crdb_ca_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Check existing CockroachDB binary
+      ansible.builtin.stat:
+        path: "{{ crdb_bin_path }}"
+      register: _crdb_bin_stat
+
+    - name: Check existing version (if binary present)
+      ansible.builtin.shell: |
+        {{ crdb_bin_path }} version 2>&1 | head -n1
+      args:
+        executable: /bin/bash
+      register: _crdb_existing_ver
+      changed_when: false
+      failed_when: false
+      when: _crdb_bin_stat.stat.exists
+
+    - name: Show existing version
+      ansible.builtin.debug:
+        msg: "Existing CockroachDB: {{ _crdb_existing_ver.stdout | default('unknown') }}"
+      when: _crdb_bin_stat.stat.exists and _crdb_existing_ver.stdout is defined
+
+    - name: Create temporary download directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: cockroach-install
+      register: _crdb_tmpdir
+      when: not _crdb_bin_stat.stat.exists or (crdb_force_reinstall | default(false) | bool)
+
+    - name: Download CockroachDB archive
+      ansible.builtin.get_url:
+        url: "{{ crdb_download_url }}"
+        dest: "{{ _crdb_tmpdir.path }}/cockroach.tgz"
+        mode: "0644"
+        force: true
+      when: not _crdb_bin_stat.stat.exists or (crdb_force_reinstall | default(false) | bool)
+
+    - name: Extract archive
+      ansible.builtin.unarchive:
+        src: "{{ _crdb_tmpdir.path }}/cockroach.tgz"
+        dest: "{{ _crdb_tmpdir.path }}"
+        remote_src: true
+      when: not _crdb_bin_stat.stat.exists or (crdb_force_reinstall | default(false) | bool)
+
+    - name: Find extracted cockroach binary
+      ansible.builtin.shell: |
+        set -o pipefail
+        find {{ _crdb_tmpdir.path }} -type f -name "cockroach" | head -n1
+      args:
+        executable: /bin/bash
+      register: _crdb_extracted_bin
+      changed_when: false
+      when: not _crdb_bin_stat.stat.exists or (crdb_force_reinstall | default(false) | bool)
+
+    - name: Install cockroach binary to {{ crdb_bin_path }}
+      ansible.builtin.copy:
+        src: "{{ _crdb_extracted_bin.stdout | trim }}"
+        dest: "{{ crdb_bin_path }}"
+        mode: "0755"
+        owner: root
+        group: root
+        remote_src: true
+      when: not _crdb_bin_stat.stat.exists or (crdb_force_reinstall | default(false) | bool)
+
+    - name: Find extracted lib directory (GEOS / spatial libs)
+      ansible.builtin.shell: |
+        find {{ _crdb_tmpdir.path }} -type d -name "lib" 2>/dev/null | head -n1
+      args:
+        executable: /bin/bash
+      register: _crdb_lib_dir
+      changed_when: false
+      failed_when: false
+      when: not _crdb_bin_stat.stat.exists or (crdb_force_reinstall | default(false) | bool)
+
+    - name: Install GEOS shared libraries
+      ansible.builtin.shell: |
+        mkdir -p /usr/local/lib/cockroach
+        cp -r {{ _crdb_lib_dir.stdout | trim }}/* /usr/local/lib/cockroach/ 2>/dev/null || true
+        ldconfig 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: true
+      failed_when: false
+      when:
+        - _crdb_lib_dir.stdout is defined
+        - _crdb_lib_dir.stdout | trim | length > 0
+        - _crdb_lib_dir.stdout | trim != ""
+
+    - name: Remove temporary download directory
+      ansible.builtin.file:
+        path: "{{ _crdb_tmpdir.path }}"
+        state: absent
+      when: _crdb_tmpdir.path is defined
+
+    - name: Verify installed binary
+      ansible.builtin.shell: |
+        {{ crdb_bin_path }} version 2>&1 | head -n1
+      args:
+        executable: /bin/bash
+      register: _crdb_ver
+      changed_when: false
+      failed_when: false
+
+    - name: Show installed version
+      ansible.builtin.debug:
+        msg: "{{ _crdb_ver.stdout }}"
+
+    - name: Check CA certificate and key
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ crdb_certs_dir }}/ca.crt"
+        - "{{ crdb_ca_dir }}/ca.key"
+        - "{{ crdb_ca_dir }}/ca.crt"
+        - "{{ crdb_certs_dir }}/ca.key"
+      register: _crdb_ca_stats
+
+    - name: Set CA existence facts
+      ansible.builtin.set_fact:
+        _crdb_ca_crt_in_certs: "{{ _crdb_ca_stats.results[0].stat.exists }}"
+        _crdb_ca_key_in_ca: "{{ _crdb_ca_stats.results[1].stat.exists }}"
+        _crdb_ca_crt_in_ca: "{{ _crdb_ca_stats.results[2].stat.exists }}"
+        _crdb_ca_key_in_certs: "{{ _crdb_ca_stats.results[3].stat.exists }}"
+
+    - name: Check existing node certificate
+      ansible.builtin.stat:
+        path: "{{ crdb_certs_dir }}/node.crt"
+      register: _crdb_node_crt
+
+    - name: Copy existing CA cert from ca_dir to certs_dir if needed
+      ansible.builtin.copy:
+        src: "{{ crdb_ca_dir }}/ca.crt"
+        dest: "{{ crdb_certs_dir }}/ca.crt"
+        mode: "0644"
+        owner: "{{ crdb_user }}"
+        group: "{{ crdb_group }}"
+        remote_src: true
+      when:
+        - not _crdb_ca_crt_in_certs
+        - _crdb_ca_crt_in_ca
+
+    - name: Create Certificate Authority (CA)
+      ansible.builtin.command: >
+        {{ crdb_bin_path }} cert create-ca
+        --certs-dir={{ crdb_certs_dir }}
+        --ca-key={{ crdb_ca_dir }}/ca.key
+        --overwrite
+      when: not _crdb_ca_crt_in_certs and not _crdb_ca_crt_in_ca
+      changed_when: true
+
+    - name: Copy ca.crt to ca_dir for safekeeping (when ca_dir != certs_dir)
+      ansible.builtin.copy:
+        src: "{{ crdb_certs_dir }}/ca.crt"
+        dest: "{{ crdb_ca_dir }}/ca.crt"
+        mode: "0644"
+        owner: root
+        group: root
+        remote_src: true
+      when:
+        - crdb_ca_dir != crdb_certs_dir
+        - not _crdb_ca_crt_in_ca
+
+    - name: Build SAN list for node certificate (include FQDN for Azure ansible_host)
+      ansible.builtin.set_fact:
+        _crdb_node_sans: >-
+          {{ ([crdb_advertise_host, crdb_hostname, inventory_hostname,
+               fqdn | default(''), ansible_fqdn | default(''),
+               public_ip | default(''), ansible_host | default(''),
+               'localhost', '127.0.0.1'] + (crdb_extra_sans | default([])))
+             | select('string') | select('!=','') | unique | list }}
+
+    - name: Create Node certificate
+      ansible.builtin.command: >
+        {{ crdb_bin_path }} cert create-node
+        {{ _crdb_node_sans | join(' ') }}
+        --certs-dir={{ crdb_certs_dir }}
+        --ca-key={{ crdb_ca_dir }}/ca.key
+        --overwrite
+      changed_when: true
+
+    - name: Create Client root certificate (for SQL admin)
+      ansible.builtin.command: >
+        {{ crdb_bin_path }} cert create-client root
+        --certs-dir={{ crdb_certs_dir }}
+        --ca-key={{ crdb_ca_dir }}/ca.key
+        --overwrite
+      changed_when: true
+
+    - name: Secure certificate permissions (certs_dir 0700, .crt 0644, .key 0600)
+      ansible.builtin.shell: |
+        chown -R {{ crdb_user }}:{{ crdb_group }} {{ crdb_certs_dir }}
+        chmod 0700 {{ crdb_certs_dir }}
+        chmod 0644 {{ crdb_certs_dir }}/*.crt 2>/dev/null || true
+        chmod 0600 {{ crdb_certs_dir }}/*.key 2>/dev/null || true
+        chmod 0600 {{ crdb_ca_dir }}/ca.key
+        chown root:root {{ crdb_ca_dir }}/ca.key
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Deploy CockroachDB systemd unit
+      ansible.builtin.template:
+        src: templates/cockroachdb.service.j2
+        dest: "/etc/systemd/system/{{ crdb_service_name }}.service"
+        mode: "0644"
+        owner: root
+        group: root
+      notify: Reload systemd
+
+    - name: Flush handlers (reload systemd before start)
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and restart CockroachDB service
+      ansible.builtin.systemd:
+        name: "{{ crdb_service_name }}"
+        enabled: true
+        state: restarted
+        daemon_reload: true
+
+    - name: Wait for CockroachDB SQL port to be open
+      ansible.builtin.wait_for:
+        host: "{{ crdb_advertise_host }}"
+        port: "{{ crdb_sql_port }}"
+        delay: 3
+        timeout: 60
+
+    - name: Wait for CockroachDB to accept connections (health check)
+      ansible.builtin.shell: |
+        {{ crdb_bin_path }} node status --certs-dir={{ crdb_certs_dir }} --host={{ crdb_advertise_host }} 2>&1 | head -n 20
+      register: _crdb_status
+      until: _crdb_status.rc == 0 or 'not yet initialized' in _crdb_status.stdout or 'cluster has already been initialized' in _crdb_status.stderr | default('') or 'not yet initialized' in _crdb_status.stderr | default('')
+      retries: 15
+      delay: 4
+      changed_when: false
+      failed_when: false
+
+    - name: Initialize CockroachDB cluster
+      ansible.builtin.shell: |
+        {{ crdb_bin_path }} init --certs-dir={{ crdb_certs_dir }} --host={{ crdb_advertise_host }} 2>&1
+      register: _crdb_init
+      changed_when: "'Cluster successfully initialized' in _crdb_init.stdout"
+      failed_when: false
+
+    - name: Show init result
+      ansible.builtin.debug:
+        msg: "{{ _crdb_init.stdout | default(_crdb_init.stderr) }}"
+
+    - name: Verify cluster initialized (node status)
+      ansible.builtin.shell: |
+        {{ crdb_bin_path }} node status --certs-dir={{ crdb_certs_dir }} --host={{ crdb_advertise_host }} 2>&1
+      register: _crdb_node_status
+      until: _crdb_node_status.rc == 0
+      retries: 10
+      delay: 3
+      changed_when: false
+
+    - name: Show node status
+      ansible.builtin.debug:
+        msg: "{{ _crdb_node_status.stdout_lines }}"
+
+    - name: Wait extra seconds for SQL to be ready before creating user
+      ansible.builtin.wait_for:
+        host: "{{ crdb_advertise_host }}"
+        port: "{{ crdb_sql_port }}"
+        delay: 2
+        timeout: 30
+
+    - name: Create dbadmin user with ADMIN grant
+      ansible.builtin.shell: |
+        {{ crdb_bin_path }} sql \
+          --certs-dir={{ crdb_certs_dir }} \
+          --host={{ crdb_advertise_host }} \
+          --execute="CREATE USER IF NOT EXISTS {{ crdb_db_admin_user }} WITH PASSWORD '{{ crdb_db_admin_password }}'; GRANT ADMIN TO {{ crdb_db_admin_user }}; ALTER USER {{ crdb_db_admin_user }} WITH PASSWORD '{{ crdb_db_admin_password }}';"
+        echo "exit:$?"
+      args:
+        executable: /bin/bash
+      register: _crdb_create_user
+      changed_when: "'CREATE' in _crdb_create_user.stdout or 'GRANT' in _crdb_create_user.stdout"
+      failed_when: false
+
+    - name: Verify dbadmin user exists
+      ansible.builtin.shell: |
+        {{ crdb_bin_path }} sql \
+          --certs-dir={{ crdb_certs_dir }} \
+          --host={{ crdb_advertise_host }} \
+          --execute="SELECT user_name FROM system.users WHERE user_name='{{ crdb_db_admin_user }}';" 2>&1
+      register: _crdb_verify_user
+      changed_when: false
+      failed_when: false
+
+    - name: Show dbadmin creation result
+      ansible.builtin.debug:
+        msg:
+          - "   Create user output: {{ _crdb_create_user.stdout | default('') | trim }}"
+          - "   Verify user      : {{ _crdb_verify_user.stdout | default('') | trim }}"
+          - "   CockroachDB cluster ready at {{ crdb_advertise_addr }}"
+          - "   Admin UI (https): https://{{ crdb_advertise_host }}:{{ crdb_http_port }}"
+          - "   SQL : {{ crdb_bin_path }} sql --certs-dir={{ crdb_certs_dir }} --host={{ crdb_advertise_host }}"
+          - "   Join new nodes with: ansible-playbook -i <inventory> join-cluster.yml (same vars/cockroach.yml)"
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true

@@ -1,0 +1,36 @@
+# Managed by Ansible — do not edit manually.
+# CockroachDB systemd unit (production / TLS mode)
+# Mirrors scripts/install-cockroachdb.sh#install_systemd_service
+
+[Unit]
+Description=CockroachDB Distributed SQL Database
+Documentation=https://www.cockroachlabs.com/docs/
+After=network.target network-online.target local-fs.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=notify
+User={{ crdb_user }}
+Group={{ crdb_group }}
+WorkingDirectory={{ crdb_store_dir }}
+ExecStart={{ crdb_bin_path }} start \
+    --store={{ crdb_store_dir }} \
+    --listen-addr=0.0.0.0:{{ crdb_sql_port }} \
+    --advertise-addr={{ crdb_advertise_addr }} \
+    --http-addr={{ crdb_http_bind }}:{{ crdb_http_port }} \
+    --join={{ crdb_join_target }} \
+    --certs-dir={{ crdb_certs_dir }}
+ExecStop={{ crdb_bin_path }} quit --certs-dir={{ crdb_certs_dir }} --host={{ crdb_advertise_addr }}
+Restart=always
+RestartSec=10
+TimeoutStopSec=60
+LimitNOFILE=35000
+LimitNPROC=infinity
+TasksMax=infinity
+StandardOutput=journal
+StandardError=journal
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
