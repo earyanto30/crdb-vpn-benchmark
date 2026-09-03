@@ -9,6 +9,7 @@ locals {
   crdb_nodes = {
     "vm-crdb-lease-sea-01"  = { net = module.net_lease_sea, vm = module.vm_crdb_lease_sea_01 }
     "vm-crdb-replica-ea-01" = { net = module.net_replica_ea, vm = module.vm_crdb_replica_ea_01 }
+    "vm-crdb-replica-ea-02" = { net = module.net_replica_ea, vm = module.vm_crdb_replica_ea_02 }
   }
 
   driver_nodes = {

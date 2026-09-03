@@ -182,39 +182,31 @@
       changed_when: false
 
     - name: Parse TPCC log and append CSV row
-      ansible.builtin.shell: |
-        set -o pipefail
-        csv="{{ driver_results_dir }}/benchmark.csv"
-        log="{{ _tpcc_log }}"
-        hist="{{ _tpcc_hist }}"
-        # Final tpmC line: "  60.0s      154.0 119.7%     40.0     16.3    117.4    134.2    142.6    142.6"
-        line="$(grep -E '^[[:space:]]+[0-9]+\.[0-9]s[[:space:]]+[0-9]' "$log" 2>/dev/null | tail -n 1 || true)"
-        if [ -z "$line" ]; then
-          tpmC=""; efc=""; avg=""; p50=""; p90=""; p95=""; p99=""; pMax=""
-        else
-          tpmC="$(echo "$line" | awk '{print $2}')"
-          efc="$(echo "$line" | awk '{print $3}' | tr -d '%')"
-          avg="$(echo "$line" | awk '{print $4}')"
-          p50="$(echo "$line" | awk '{print $5}')"
-          p90="$(echo "$line" | awk '{print $6}')"
-          p95="$(echo "$line" | awk '{print $7}')"
-          p99="$(echo "$line" | awk '{print $8}')"
-          pMax="$(echo "$line" | awk '{print $9}')"
-        fi
-        # ops_total / errors from summary line "   60.0s      164            392 ..."
-        # Use tpmC line's ops_total is not present; parse from result line if needed — fallback empty
-        ops_total=""; errors=""
-        summary_line="$(grep -E '^[[:space:]]+[0-9]+\.[0-9]s[[:space:]]+[0-9]+[[:space:]]+[0-9]+' "$log" 2>/dev/null | tail -n 5 | grep -v "tpmC" | tail -n 1 || true)"
-        # keep empty if not parsable
-        ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        # CSV row: quote log/hist paths to handle commas
-        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"%s","%s",%s\n' \
-          "$ts" "cockroach" "{{ driver_resolved_target }}" "{{ driver_sql_port }}" \
-          "{{ driver_tpcc_warehouses }}" "{{ driver_tpcc_concurrency }}" "{{ driver_tpcc_duration }}" \
-          "$tpmC" "$efc" "$avg" "$p50" "$p90" "$p95" "$p99" "$pMax" "$ops_total" "$errors" "$log" "$hist" "{{ _tpcc_run.rc }}" >> "$csv"
-        echo "=== CSV appended ==="
-        tail -n 2 "$csv"
-      args:
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          csv="{{ driver_results_dir }}/benchmark.csv"
+          log="{{ _tpcc_log }}"
+          hist="{{ _tpcc_hist }}"
+          line="$(grep -E '^[[:space:]]+[0-9]+\.[0-9]s[[:space:]]+[0-9]' "$log" 2>/dev/null | tail -n 1 || true)"
+          if [ -z "$line" ]; then
+            tpmC=""; efc=""; avg=""; p50=""; p90=""; p95=""; p99=""; pMax=""
+          else
+            tpmC="$(echo "$line" | awk '{print $2}')"
+            efc="$(echo "$line" | awk '{print $3}' | tr -d '%')"
+            avg="$(echo "$line" | awk '{print $4}')"
+            p50="$(echo "$line" | awk '{print $5}')"
+            p90="$(echo "$line" | awk '{print $6}')"
+            p95="$(echo "$line" | awk '{print $7}')"
+            p99="$(echo "$line" | awk '{print $8}')"
+            pMax="$(echo "$line" | awk '{print $9}')"
+          fi
+          ops_total=""; errors=""
+          summary_line="$(grep -E '^[[:space:]]+[0-9]+\.[0-9]s[[:space:]]+[0-9]+[[:space:]]+[0-9]+' "$log" 2>/dev/null | tail -n 5 | grep -v "tpmC" | tail -n 1 || true)"
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$ts" "cockroach" "{{ driver_resolved_target }}" "{{ driver_sql_port }}" "{{ driver_tpcc_warehouses }}" "{{ driver_tpcc_concurrency }}" "{{ driver_tpcc_duration }}" "$tpmC" "$efc" "$avg" "$p50" "$p90" "$p95" "$p99" "$pMax" "$ops_total" "$errors" "$log" "$hist" "{{ _tpcc_run.rc }}" >> "$csv"
+          echo "=== CSV appended ==="
+          tail -n 2 "$csv"
         executable: /bin/bash
       register: _csv_row
       changed_when: true
@@ -240,4 +232,65 @@
         src: "{{ driver_results_dir }}/benchmark.csv"
         dest: "{{ playbook_dir }}/tmp/benchmark.csv"
         flat: true
+      failed_when: false
+
+    # ── RAW DATA CSV (per-second interval data, not just summary) ─────────
+    - name: Generate raw data CSV (per-interval ops/latency, 1 row per txn per second)
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          raw_csv="{{ driver_results_dir }}/benchmark-raw-{{ _bench_ts }}.csv"
+          log="{{ _tpcc_log }}"
+          hist="{{ _tpcc_hist }}"
+          echo "timestamp,elapsed,errors,ops_inst,ops_cum,avg_ms,p50_ms,p95_ms,p99_ms,pMax_ms,txn_type,warehouses,concurrency,duration,log_file,hist_file" > "$raw_csv"
+          # Per-interval lines: "   1.0s  0  0.0  0.0  0.0  0.0  0.0  0.0  delivery" (4 latencies, no avg) OR "  10.0s  0  37  3.7  2358.0 2550.1 4563.4 5100.3 5100.3 delivery" (5 latencies incl avg)
+          # Final tpmC line contains % — exclude
+          grep -E '^[[:space:]]+[0-9]+\.[0-9]s[[:space:]]+[0-9]' "$log" 2>/dev/null | grep -E '(delivery|newOrder|orderStatus|payment|stockLevel)$' | grep -v "%" | while read -ra arr; do
+            ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            # arr[0]=elapsed, [1]=errors, [2]=ops_inst, [3]=ops_cum, rest=latencies+txn
+            elapsed="${arr[0]}"; errors="${arr[1]}"; ops_inst="${arr[2]}"; ops_cum="${arr[3]}"
+            n="$(printf '%s\n' "${arr[@]}" | wc -l)"
+            # last element is txn_type (string, not number), rest are latencies
+            txn="${arr[$((n-1))]}"
+            # latencies are arr[4]..arr[n-2]
+            lat_count=$((n-5))
+            if [ "$lat_count" -eq 4 ]; then
+              # no avg: p50 p95 p99 pMax
+              avg=""; p50="${arr[4]}"; p95="${arr[5]}"; p99="${arr[6]}"; pMax="${arr[7]}"
+            elif [ "$lat_count" -eq 5 ]; then
+              # with avg: avg p50 p95 p99 pMax
+              avg="${arr[4]}"; p50="${arr[5]}"; p95="${arr[6]}"; p99="${arr[7]}"; pMax="${arr[8]}"
+            else
+              avg=""; p50=""; p95=""; p99=""; pMax=""
+            fi
+            printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$ts" "$elapsed" "$errors" "$ops_inst" "$ops_cum" "$avg" "$p50" "$p95" "$p99" "$pMax" "$txn" "{{ driver_tpcc_warehouses }}" "{{ driver_tpcc_concurrency }}" "{{ driver_tpcc_duration }}" "$log" "$hist" >> "$raw_csv"
+          done
+          echo "=== RAW CSV generated: $raw_csv ($(wc -l < "$raw_csv") rows) ==="
+          head -n 3 "$raw_csv" && echo "..." && tail -n 5 "$raw_csv"
+        executable: /bin/bash
+      register: _raw_csv
+      changed_when: true
+
+    - name: Show raw CSV preview
+      ansible.builtin.debug:
+        msg: "{{ _raw_csv.stdout_lines }}"
+
+    - name: Fetch raw CSV to controller
+      ansible.builtin.fetch:
+        src: "{{ driver_results_dir }}/benchmark-raw-{{ _bench_ts }}.csv"
+        dest: "{{ playbook_dir }}/tmp/benchmark-raw-{{ _bench_ts }}.csv"
+        flat: true
+      failed_when: false
+
+    - name: Also copy raw CSV to direct folder (for evaluation)
+      ansible.builtin.shell: |
+        mkdir -p "{{ playbook_dir }}/direct" 2>/dev/null || true
+        # Fetched files are in {{ playbook_dir }}/tmp/ on controller, not driver_results_dir
+        cp "{{ playbook_dir }}/tmp/benchmark-raw-{{ _bench_ts }}.csv" "{{ playbook_dir }}/direct/benchmark-raw-{{ _bench_ts }}.csv" 2>/dev/null || true
+        cp "{{ playbook_dir }}/tmp/benchmark.csv" "{{ playbook_dir }}/direct/benchmark.csv" 2>/dev/null || true
+        ls -lh "{{ playbook_dir }}/direct/" 2>&1 | tail -n 20 || ls -lh "{{ playbook_dir }}/tmp/benchmark*.csv" 2>&1 | tail -n 20
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
       failed_when: false
