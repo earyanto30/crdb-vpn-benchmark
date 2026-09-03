@@ -81,11 +81,15 @@
         msg: "TPCC not loaded (warehouses={{ _bench_warehouses.stdout | trim }}, expected {{ driver_tpcc_warehouses }}). Run setup.yml first."
       when: _bench_warehouses.stdout | trim | int != driver_tpcc_warehouses | int
 
-    - name: Build workload URI (TLS + password, Q5 — always TLS + dbadmin)
+    - name: Build workload URI and file names (single timestamp for log+hist)
       ansible.builtin.set_fact:
+        _bench_ts: "{{ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ') }}"
         _tpcc_uri: "postgres://{{ driver_db_user }}:{{ driver_db_password }}@{{ driver_resolved_target }}:{{ driver_sql_port }}/tpcc?sslmode=require&sslrootcert={{ driver_certs_dir }}/ca.crt"
-        _tpcc_hist: "{{ driver_results_dir }}/tpcc-{{ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ') }}.hist.json"
-        _tpcc_log: "{{ driver_results_dir }}/tpcc-{{ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ') }}.log"
+      # Use cached timestamp so hist and log share same name (avoid 1s drift from double lookup)
+    - name: Set log/hist paths from timestamp
+      ansible.builtin.set_fact:
+        _tpcc_hist: "{{ driver_results_dir }}/tpcc-{{ _bench_ts }}.hist.json"
+        _tpcc_log: "{{ driver_results_dir }}/tpcc-{{ _bench_ts }}.log"
 
     - name: Show URI (password redacted)
       ansible.builtin.debug:
@@ -97,15 +101,16 @@
     - name: Run TPCC workload (concurrency={{ driver_tpcc_concurrency }}, duration={{ driver_tpcc_duration }}, warehouses={{ driver_tpcc_warehouses }})
       ansible.builtin.shell: |
         set -o pipefail
-        echo "[{{ lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ') }}] Starting TPCC: warehouses={{ driver_tpcc_warehouses }} concurrency={{ driver_tpcc_concurrency }} duration={{ driver_tpcc_duration }} target={{ driver_resolved_target }} (TLS dbadmin)"
-        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout {{ (driver_tpcc_duration | regex_replace('m','') | int * 60 + 300) }}s {{ driver_bin_path }} workload run tpcc \
+        echo "[{{ _bench_ts }}] Starting TPCC: warehouses={{ driver_tpcc_warehouses }} concurrency={{ driver_tpcc_concurrency }} duration={{ driver_tpcc_duration }} target={{ driver_resolved_target }} (TLS dbadmin)"
+        # stdbuf -oL ensures line-buffered output so log tail is visible even if workload still running; timeout handles duration+slack
+        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout {{ (driver_tpcc_duration | regex_replace('m','') | int * 60 + 300) }}s stdbuf -oL -eL {{ driver_bin_path }} workload run tpcc \
           --warehouses={{ driver_tpcc_warehouses }} \
           --concurrency={{ driver_tpcc_concurrency }} \
           --duration={{ driver_tpcc_duration }} \
           {{ '--tolerate-errors' if driver_tpcc_tolerate_errors | bool else '' }} \
           --histograms={{ _tpcc_hist }} \
           {{ driver_tpcc_extra_args }} \
-          "{{ _tpcc_uri }}" 2>&1 | tee {{ _tpcc_log }}
+          "{{ _tpcc_uri }}" 2>&1 | stdbuf -oL tee {{ _tpcc_log }}
         rc=${PIPESTATUS[0]}
         echo "WORKLOAD_RC:$rc"
         exit $rc
@@ -116,13 +121,24 @@
       failed_when: false
       # duration 10m + 5m slack for histograms flush
 
-    - name: Print workload results to terminal (Q4)
-      ansible.builtin.debug:
-        msg: "{{ _tpcc_run.stdout_lines }}"
+    - name: Print workload results to terminal (last 200 lines of log, avoids stdout truncation)
+      ansible.builtin.shell: |
+        echo "=== WORKLOAD EXIT rc={{ _tpcc_run.rc | default('?') }} ==="
+        tail -n 200 {{ _tpcc_log }} 2>/dev/null | cat
+        echo "=== tail _tpcc_run stdout (last 50) ==="
+        printf '%s\n' "{{ _tpcc_run.stdout | default('') | regex_replace('\"','') }}" | tail -n 50 || true
+      args:
+        executable: /bin/bash
+      register: _tpcc_tail
+      changed_when: false
+      failed_when: false
 
     - name: Save summary tail to terminal
       ansible.builtin.shell: |
-        echo "=== TPCC SUMMARY ==="; tail -n 100 {{ _tpcc_log }} 2>/dev/null | cat; echo "=== histograms: {{ _tpcc_hist }} ==="; wc -l {{ _tpcc_hist }} 2>/dev/null || echo "no hist"
+        echo "=== TPCC SUMMARY (tpmC line) ==="; grep -E 'tpmC|_elapsed.*tpmC' {{ _tpcc_log }} 2>/dev/null | tail -n 5 | cat || echo "no tpmC yet (workload still warming up or log truncated — check {{ _tpcc_log }})"
+        echo "=== last 100 log lines ==="; tail -n 100 {{ _tpcc_log }} 2>/dev/null | cat
+        echo "=== histograms: {{ _tpcc_hist }} ==="; wc -l {{ _tpcc_hist }} 2>/dev/null || echo "no hist (workload may still be running)"
+        ls -lh {{ _tpcc_log }} {{ _tpcc_hist }} 2>&1 | cat
       args:
         executable: /bin/bash
       register: _tpcc_summary
@@ -150,3 +166,78 @@
     - name: Show result files
       ansible.builtin.debug:
         msg: "{{ _tpcc_files.stdout_lines }}"
+
+    # ── CSV output (one row per benchmark run) ────────────────────────────
+    - name: Ensure benchmark CSV header exists
+      ansible.builtin.shell: |
+        csv="{{ driver_results_dir }}/benchmark.csv"
+        if [ ! -f "$csv" ]; then
+          echo "timestamp,db_type,host,port,warehouses,concurrency,duration,tpmC,efficiency_pct,avg_ms,p50_ms,p90_ms,p95_ms,p99_ms,pMax_ms,ops_total,errors,log_file,hist_file,rc" > "$csv"
+          chown {{ ansible_user | default('evan') }}:{{ ansible_user | default('evan') }} "$csv" 2>/dev/null || true
+        fi
+        cat "$csv"
+      args:
+        executable: /bin/bash
+      register: _csv_header
+      changed_when: false
+
+    - name: Parse TPCC log and append CSV row
+      ansible.builtin.shell: |
+        set -o pipefail
+        csv="{{ driver_results_dir }}/benchmark.csv"
+        log="{{ _tpcc_log }}"
+        hist="{{ _tpcc_hist }}"
+        # Final tpmC line: "  60.0s      154.0 119.7%     40.0     16.3    117.4    134.2    142.6    142.6"
+        line="$(grep -E '^[[:space:]]+[0-9]+\.[0-9]s[[:space:]]+[0-9]' "$log" 2>/dev/null | tail -n 1 || true)"
+        if [ -z "$line" ]; then
+          tpmC=""; efc=""; avg=""; p50=""; p90=""; p95=""; p99=""; pMax=""
+        else
+          tpmC="$(echo "$line" | awk '{print $2}')"
+          efc="$(echo "$line" | awk '{print $3}' | tr -d '%')"
+          avg="$(echo "$line" | awk '{print $4}')"
+          p50="$(echo "$line" | awk '{print $5}')"
+          p90="$(echo "$line" | awk '{print $6}')"
+          p95="$(echo "$line" | awk '{print $7}')"
+          p99="$(echo "$line" | awk '{print $8}')"
+          pMax="$(echo "$line" | awk '{print $9}')"
+        fi
+        # ops_total / errors from summary line "   60.0s      164            392 ..."
+        # Use tpmC line's ops_total is not present; parse from result line if needed — fallback empty
+        ops_total=""; errors=""
+        summary_line="$(grep -E '^[[:space:]]+[0-9]+\.[0-9]s[[:space:]]+[0-9]+[[:space:]]+[0-9]+' "$log" 2>/dev/null | tail -n 5 | grep -v "tpmC" | tail -n 1 || true)"
+        # keep empty if not parsable
+        ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        # CSV row: quote log/hist paths to handle commas
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"%s","%s",%s\n' \
+          "$ts" "cockroach" "{{ driver_resolved_target }}" "{{ driver_sql_port }}" \
+          "{{ driver_tpcc_warehouses }}" "{{ driver_tpcc_concurrency }}" "{{ driver_tpcc_duration }}" \
+          "$tpmC" "$efc" "$avg" "$p50" "$p90" "$p95" "$p99" "$pMax" "$ops_total" "$errors" "$log" "$hist" "{{ _tpcc_run.rc }}" >> "$csv"
+        echo "=== CSV appended ==="
+        tail -n 2 "$csv"
+      args:
+        executable: /bin/bash
+      register: _csv_row
+      changed_when: true
+
+    - name: Show benchmark CSV
+      ansible.builtin.debug:
+        msg: "{{ _csv_row.stdout_lines }}"
+
+    - name: Show full CSV
+      ansible.builtin.shell: |
+        cat "{{ driver_results_dir }}/benchmark.csv" 2>/dev/null || echo "no csv"
+      args:
+        executable: /bin/bash
+      register: _csv_full
+      changed_when: false
+
+    - name: Print CSV to terminal
+      ansible.builtin.debug:
+        msg: "{{ _csv_full.stdout_lines }}"
+
+    - name: Fetch CSV to controller (for local analysis)
+      ansible.builtin.fetch:
+        src: "{{ driver_results_dir }}/benchmark.csv"
+        dest: "{{ playbook_dir }}/tmp/benchmark.csv"
+        flat: true
+      failed_when: false
