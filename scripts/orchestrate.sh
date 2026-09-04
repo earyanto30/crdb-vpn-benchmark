@@ -86,7 +86,7 @@ restore_snapshot() {
     done
     # wait for VMs to be back (port 22)
     sleep 15
-    for h in $(python3 -c "import yaml; d=yaml.safe_load(open('$INVENTORY')); 
+    for h in $(python3 -c "import yaml; d=yaml.safe_load(open('$INVENTORY'));
 for g in ['cockroachdb','workload_driver']:
  for host,vars in d['all']['children'][g]['hosts'].items():
   print(vars.get('ansible_host',''))" 2>/dev/null | sort -u); do
@@ -135,8 +135,8 @@ restore_snapshot
 # ── 3. WIREGUARD (kernel) (5×) ───────────────────────────────────────────────
 step "wireguard server" "$WG_SERVER"
 step "wireguard peer" "$WG_PEER"
-step "cockroach create cluster (wireguard)" "$COCKROACH_CREATE -e crdb_advertise_mode=wireguard"
-step "cockroach join cluster (wireguard)" "$COCKROACH_JOIN -e crdb_advertise_mode=wireguard"
+step "cockroach create cluster (wireguard)" "$COCKROACH_CREATE -e crdb_advertise_mode=wireguard -e crdb_wireguard_interface=wg0"
+step "cockroach join cluster (wireguard)" "$COCKROACH_JOIN -e crdb_advertise_mode=wireguard -e crdb_wireguard_interface=wg0"
 step "setup workload" "$WORKLOAD_SETUP"
 run_bench_iterations "wireguard" 5
 
@@ -146,8 +146,8 @@ restore_snapshot
 step "wireguard-go server" "$WGG_SERVER"
 step "wireguard-go peer" "$WGG_PEER"
 # wireguard-go still uses wg0 interface, so same wireguard mode for cockroach
-step "cockroach create cluster (wireguard-go)" "$COCKROACH_CREATE -e crdb_advertise_mode=wireguard"
-step "cockroach join cluster (wireguard-go)" "$COCKROACH_JOIN -e crdb_advertise_mode=wireguard"
+step "cockroach create cluster (wireguard-go)" "$COCKROACH_CREATE -e crdb_advertise_mode=wireguard -e crdb_wireguard_interface=wg0"
+step "cockroach join cluster (wireguard-go)" "$COCKROACH_JOIN -e crdb_advertise_mode=wireguard -e crdb_wireguard_interface=wg0"
 step "setup workload" "$WORKLOAD_SETUP"
 run_bench_iterations "wireguard-go" 5
 
