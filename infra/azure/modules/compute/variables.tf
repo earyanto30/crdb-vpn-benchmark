@@ -45,3 +45,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "create_snapshot" {
+  description = "Create incremental snapshot of OS disk after VM creation."
+  type        = bool
+  default     = true
+}

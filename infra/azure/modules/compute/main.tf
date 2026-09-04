@@ -72,3 +72,17 @@ resource "azurerm_linux_virtual_machine" "cdb" {
   # Disable password authentication; SSH key only
   disable_password_authentication = true
 }
+
+# ── OS Disk Snapshot (after VM) ───────────────────────────────────────────────
+# Incremental snapshot of the managed OS disk, created after VM is provisioned.
+# One snapshot per VM (snap-<name>), re-used on subsequent applies unless tainted.
+resource "azurerm_snapshot" "os_disk" {
+  count                 = var.create_snapshot ? 1 : 0
+  name                  = "snap-${var.name}"
+  location              = var.location
+  resource_group_name   = var.resource_group_name
+  create_option         = "Copy"
+  source_resource_id    = azurerm_linux_virtual_machine.cdb.os_disk[0].id
+  incremental_enabled   = true
+  tags                  = var.tags
+}

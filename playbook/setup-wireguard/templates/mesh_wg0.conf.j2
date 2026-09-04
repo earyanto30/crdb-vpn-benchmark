@@ -1,0 +1,27 @@
+# Managed by Ansible — full mesh, do not edit manually.
+# Re-rendered by join-peer.yml to reflect all mesh members.
+
+[Interface]
+Address    = {{ wg_mesh_ip }}/24
+ListenPort = {{ wg_port }}
+PrivateKey = {{ wg_private_key }}
+{% if inventory_hostname in groups['wireguard_server'] %}
+
+# Allow traffic forwarding through the tunnel and masquerade outbound packets (server NAT)
+PostUp   = iptables -A FORWARD -i {{ wg_interface }} -j ACCEPT
+PostUp   = iptables -A FORWARD -o {{ wg_interface }} -j ACCEPT
+PostUp   = iptables -t nat -A POSTROUTING -o {{ wg_server_public_nic }} -j MASQUERADE
+PostDown = iptables -D FORWARD -i {{ wg_interface }} -j ACCEPT
+PostDown = iptables -D FORWARD -o {{ wg_interface }} -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -o {{ wg_server_public_nic }} -j MASQUERADE
+{% endif %}
+
+{% for peer in mesh_peers if peer.name != inventory_hostname %}
+[Peer]
+# {{ peer.name }} — {{ peer.wg_ip }}
+PublicKey           = {{ peer.public_key }}
+Endpoint            = {{ peer.endpoint }}:{{ wg_port }}
+AllowedIPs          = {{ peer.wg_ip }}/32
+PersistentKeepalive = {{ wg_keepalive }}
+
+{% endfor %}

@@ -1,0 +1,17 @@
+# Managed by Ansible — full mesh, do not edit manually.
+# Re-rendered by join-peer.yml to reflect all mesh members.
+# This file is read by 'wg setconf' on service (re)start — no Address/PostUp/PostDown allowed.
+
+[Interface]
+PrivateKey = {{ wg_private_key }}
+ListenPort = {{ wg_port }}
+
+{% for peer in mesh_peers if peer.name != inventory_hostname %}
+[Peer]
+# {{ peer.name }} — {{ peer.wg_ip }}
+PublicKey           = {{ peer.public_key }}
+Endpoint            = {{ peer.endpoint }}:{{ wg_port }}
+AllowedIPs          = {{ peer.wg_ip }}/32
+PersistentKeepalive = {{ wg_keepalive }}
+
+{% endfor %}
