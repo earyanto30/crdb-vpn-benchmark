@@ -62,6 +62,14 @@
         autoremove: true
       when: wgg_cleanup_golang | bool
 
+    - name: Ensure WireGuard configuration directory exists
+      ansible.builtin.file:
+        path: "{{ wg_config_dir }}"
+        state: directory
+        mode: "0700"
+        owner: root
+        group: root
+
     - name: Generate WireGuard server private key
       ansible.builtin.shell:
         cmd: wg genkey | tee {{ wg_config_dir }}/server_private.key | wg pubkey > {{ wg_config_dir }}/server_public.key

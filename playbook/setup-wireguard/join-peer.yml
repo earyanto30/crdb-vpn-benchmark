@@ -69,6 +69,14 @@
         state: present
         update_cache: true
 
+    - name: Ensure WireGuard configuration directory exists
+      ansible.builtin.file:
+        path: "{{ wg_config_dir }}"
+        state: directory
+        mode: "0700"
+        owner: root
+        group: root
+
     - name: Generate WireGuard peer private key
       ansible.builtin.shell:
         cmd: wg genkey | tee {{ wg_config_dir }}/peer_private.key | wg pubkey > {{ wg_config_dir }}/peer_public.key
