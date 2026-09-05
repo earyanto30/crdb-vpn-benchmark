@@ -12,15 +12,17 @@ module "net_replica_japaneast" {
 module "vm_crdb_replica_japaneast_01" {
   source = "./modules/compute"
 
-  name                = "vm-crdb-replica-japaneast-01"
-  location            = "japaneast"
-  resource_group_name = azurerm_resource_group.cdb.name
-  subnet_id           = module.net_replica_japaneast.subnet_id
-  vm_size             = var.vm_size
-  admin_username      = var.admin_username
-  ssh_public_key      = var.ssh_public_key
-  os_disk_size_gb     = var.os_disk_size_gb
-  tags                = var.tags
+  name                                 = "vm-crdb-replica-japaneast-01"
+  location                             = "japaneast"
+  resource_group_name                  = azurerm_resource_group.cdb.name
+  subnet_id                            = module.net_replica_japaneast.subnet_id
+  vm_size                              = var.vm_size
+  admin_username                       = var.admin_username
+  ssh_public_key                       = var.ssh_public_key
+  os_disk_size_gb                      = var.os_disk_size_gb
+  tags                                 = var.tags
+  create_snapshot                      = true
+  boot_diagnostics_storage_account_uri = azurerm_storage_account.diag.primary_blob_endpoint
 
   spot_enabled         = var.spot_enabled
   spot_eviction_policy = var.spot_eviction_policy

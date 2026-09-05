@@ -64,6 +64,10 @@ resource "azurerm_linux_virtual_machine" "cdb" {
     disk_size_gb         = var.os_disk_size_gb
   }
 
+  boot_diagnostics {
+    storage_account_uri = var.boot_diagnostics_storage_account_uri
+  }
+
   # Ubuntu 24.04 LTS (Noble Numbat) — Azure image reference
   source_image_reference {
     publisher = "Canonical"
@@ -76,8 +80,27 @@ resource "azurerm_linux_virtual_machine" "cdb" {
   disable_password_authentication = true
 }
 
-# ── OS Disk Snapshot (after VM) ───────────────────────────────────────────────
-# Incremental snapshot of the managed OS disk, created after VM is provisioned.
+# ── Wait for SSH Readiness before Snapshotting ────────────────────────────────
+# Gates snapshot creation on the guest OS having fully booted (sshd up, host keys generated).
+resource "null_resource" "wait_for_ssh" {
+  depends_on = [azurerm_linux_virtual_machine.cdb]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      for i in $(seq 1 30); do
+        ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+          -o BatchMode=yes ${var.admin_username}@${azurerm_public_ip.cdb.ip_address} true \
+          && exit 0
+        sleep 10
+      done
+      echo "SSH never became ready after 300s" >&2
+      exit 1
+    EOT
+  }
+}
+
+# ── OS Disk Snapshot (after VM and SSH ready) ──────────────────────────────────
+# Incremental snapshot of the managed OS disk, created after VM is provisioned and verified reachable.
 # One snapshot per VM (snap-<name>), re-used on subsequent applies unless tainted.
 resource "azurerm_snapshot" "os_disk" {
   count               = var.create_snapshot ? 1 : 0
@@ -88,4 +111,6 @@ resource "azurerm_snapshot" "os_disk" {
   source_resource_id  = azurerm_linux_virtual_machine.cdb.os_disk[0].id
   incremental_enabled = true
   tags                = var.tags
+
+  depends_on = [null_resource.wait_for_ssh]
 }

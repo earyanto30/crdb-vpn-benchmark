@@ -138,6 +138,51 @@ check_prerequisites() {
   say_success "Azure account verified: ${account_name}"
 }
 
+# --- Infrastructure Reality Check ---
+# Distrust local checkpoint file if cloud infrastructure was destroyed out-of-band
+check_pipeline_state_reality() {
+  if ! is_step_done "tofu_apply"; then
+    return 0
+  fi
+
+  say_step "Validating pipeline checkpoint against actual infrastructure state"
+
+  local rg="rg-crdbvpnbench-dev"
+  if [[ -f "${TF_DIR}/terraform.tfvars" ]]; then
+    local tfvars_rg
+    tfvars_rg=$(grep -E '^[[:space:]]*resource_group_name[[:space:]]*=' "${TF_DIR}/terraform.tfvars" | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/' || true)
+    if [[ -n "${tfvars_rg}" ]]; then
+      rg="${tfvars_rg}"
+    fi
+  fi
+
+  say_info "Verifying VM resources exist in Azure resource group '${rg}'..."
+
+  local group_exists="false"
+  group_exists=$(az group exists -n "${rg}" 2>/dev/null | tr -d '[:space:]' || true)
+
+  local vm_count=0
+  if [[ "${group_exists}" == "true" ]]; then
+    vm_count=$(az vm list -g "${rg}" --query "length(@)" -o tsv 2>/dev/null || echo "0")
+  fi
+
+  if [[ "${group_exists}" != "true" || "${vm_count}" -eq 0 ]]; then
+    say_error "================================================================================"
+    say_error "CHECKPOINT REALITY MISMATCH DETECTED:"
+    say_error "  Checkpoint file (${STATE_FILE}) claims 'tofu_apply' is completed,"
+    say_error "  but no active Virtual Machines exist in Azure resource group '${rg}'."
+    say_error ""
+    say_error "  Resources were destroyed out-of-band while the local checkpoint was preserved."
+    say_error "  To prevent executing playbooks against non-existent hosts, please re-run with --reset:"
+    say_error ""
+    say_error "      $0 --reset"
+    say_error "================================================================================"
+    die "Stale checkpoint detected. Manual confirmation required: re-run with --reset to start fresh."
+  fi
+
+  say_success "Infrastructure reality check passed (${vm_count} VM(s) active in '${rg}')."
+}
+
 # --- Inventory Management ---
 export_inventory() {
   say_step "Exporting Ansible inventory from OpenTofu"
@@ -470,6 +515,7 @@ main() {
   fi
 
   check_prerequisites
+  check_pipeline_state_reality
 
   # ----------------------------------------------------------------------------
   # Step 1: Initialize OpenTofu
