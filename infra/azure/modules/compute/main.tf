@@ -64,10 +64,6 @@ resource "azurerm_linux_virtual_machine" "cdb" {
     disk_size_gb         = var.os_disk_size_gb
   }
 
-  boot_diagnostics {
-    storage_account_uri = var.boot_diagnostics_storage_account_uri
-  }
-
   # Ubuntu 24.04 LTS (Noble Numbat) — Azure image reference
   source_image_reference {
     publisher = "Canonical"

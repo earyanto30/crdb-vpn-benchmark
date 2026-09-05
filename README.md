@@ -56,13 +56,9 @@ To discard previous state and start fresh from Step 1:
 
 ## Troubleshooting & Boot Diagnostics
 
-### Persistent Boot Diagnostics Storage
-VM boot diagnostics are configured to write to a dedicated, shared storage account (`crdbvpnbenchdiag`) defined in `infra/azure/main.tf`. Because this storage account exists outside the lifecycle of individual VMs, boot logs and serial console output are preserved across disk swaps, OS restores, and VM deallocations.
-
 ### Retrieving Boot Diagnostics Logs
 
-#### 1. When the VM exists in Azure (running or deallocated)
-Azure CLI automatically reads the VM's diagnostic profile to determine where logs are stored. No special flags are required for named vs. Azure-managed storage accounts:
+Azure VM boot diagnostics allow you to inspect the VM console output and boot log:
 
 ```bash
 # Get serial console / boot log for a specific VM
@@ -75,26 +71,6 @@ for vm in vm-crdb-lease-sea-01 vm-crdb-replica-ea-01 vm-crdb-replica-japaneast-0
   echo "=== Boot Log for $vm ==="
   az vm boot-diagnostics get-boot-log -g rg-crdbvpnbench-dev -n "$vm"
 done
-```
-
-#### 2. When the VM has been destroyed or is unreachable via ARM
-Even if a VM resource has been destroyed or deleted, the boot diagnostics logs remain stored as blobs in the `crdbvpnbenchdiag` storage account:
-
-```bash
-# List all diagnostic blob containers in the persistent storage account
-az storage container list \
-  --account-name crdbvpnbenchdiag \
-  --auth-mode login \
-  --query "[].name" -o tsv
-
-# Container names follow the format: bootdiagnostics-<vm_name>-<vm_id>
-# Download the raw serial console log:
-az storage blob download \
-  --account-name crdbvpnbenchdiag \
-  --container-name "bootdiagnostics-vm-crdb-lease-sea-01-<uuid>" \
-  --name "vm-crdb-lease-sea-01.<uuid>.console.log" \
-  --file "lease-sea-01-console.log" \
-  --auth-mode login
 ```
 
 ---

@@ -73,9 +73,3 @@ variable "spot_max_bid_price" {
   type        = number
   default     = -1
 }
-
-variable "boot_diagnostics_storage_account_uri" {
-  description = "Storage account blob endpoint for boot diagnostics."
-  type        = string
-  default     = null
-}

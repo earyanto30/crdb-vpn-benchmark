@@ -95,8 +95,3 @@ output "ansible_inventory" {
     }
   })
 }
-
-output "diag_storage_account_name" {
-  description = "Name of the storage account used for VM boot diagnostics."
-  value       = azurerm_storage_account.diag.name
-}
