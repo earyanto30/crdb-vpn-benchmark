@@ -6,7 +6,7 @@
 
 # ── Binary ─────────────────────────────────────────────────────────────────
 # HTTP URL that hosts the CockroachDB tarball (same default as scripts/install-cockroachdb.sh)
-crdb_download_url: "http://192.168.129.2/downloads/cockroach-v26.2.5.linux-amd64.tgz"
+crdb_download_url: "https://binaries.cockroachdb.com/cockroach-v26.2.5.linux-amd64.tgz"
 crdb_bin_path: /usr/local/bin/cockroach
 
 # ── System user / group / filesystem layout ────────────────────────────────

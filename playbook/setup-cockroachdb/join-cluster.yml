@@ -84,7 +84,7 @@
 
     - name: Set advertise host (direct mode — auto)
       ansible.builtin.set_fact:
-        crdb_advertise_host: "{{ public_ip | default(ansible_host) if (public_ip is defined or ansible_host is defined and ansible_host is match('^\\d+\\.\\d+\\.\\d+\\.\\d+$')) else ansible_default_ipv4.address | default(ansible_host) }}"
+        crdb_advertise_host: "{{ public_ip if (public_ip is defined and public_ip | length > 0) else (ansible_host if (ansible_host is defined and ansible_host | length > 0) else ansible_default_ipv4.address) }}"
       when:
         - crdb_advertise_mode == "direct"
         - crdb_advertise_host is not defined or crdb_advertise_host | length == 0

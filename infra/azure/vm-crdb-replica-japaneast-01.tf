@@ -22,7 +22,6 @@ module "vm_crdb_replica_japaneast_01" {
   os_disk_size_gb     = var.os_disk_size_gb
   tags                = var.tags
 
-  # Spot toggle per-VM: true = 60-90% discount, evictable; false = Regular
   spot_enabled         = var.spot_enabled
   spot_eviction_policy = var.spot_eviction_policy
   spot_max_bid_price   = var.spot_max_bid_price

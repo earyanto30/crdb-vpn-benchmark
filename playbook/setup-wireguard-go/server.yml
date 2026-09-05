@@ -29,7 +29,9 @@
       ansible.builtin.shell:
         cmd: |
           GOBIN={{ wgg_bin | dirname }} go install {{ wgg_go_package }}@{{ 'latest' if wgg_version == 'latest' else 'v' + wgg_version }}
-          mv -f {{ wgg_bin | dirname }}/wireguard {{ wgg_bin }}
+          if [ -f "{{ wgg_bin | dirname }}/wireguard" ] && [ "{{ wgg_bin | dirname }}/wireguard" != "{{ wgg_bin }}" ]; then
+            mv -f "{{ wgg_bin | dirname }}/wireguard" "{{ wgg_bin }}"
+          fi
         creates: "{{ wgg_bin }}"
       environment:
         PATH: "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

@@ -5,9 +5,10 @@ ssh_public_key = "ssh-ed25519 AAAA... evan@hostname"
 
 # Per-VM configuration now lives in vm-crdb-*.tf.
 # Edit those files to change region / CIDR per VM.
-#   vm-crdb-lease-sea-01.tf   — CRDB leaseholder n1 (SEA)
-#   vm-crdb-replica-ea-01.tf  — CRDB replica n2 (EA)
-#   vm-crdb-driver-sea-01.tf  — workload driver (co-located SEA, shares SEA VNet)
+#   vm-crdb-lease-sea-01.tf          — CRDB leaseholder n1 (SEA)
+#   vm-crdb-replica-ea-01.tf         — CRDB replica n2 (EA)
+#   vm-crdb-replica-japaneast-01.tf  — CRDB replica n3 (Japan East)
+#   vm-crdb-driver-sea-01.tf         — workload driver (co-located SEA, shares SEA VNet)
 
 # Optional overrides (defaults shown)
 # rg_location         = "southeastasia"

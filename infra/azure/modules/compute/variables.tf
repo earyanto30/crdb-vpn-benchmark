@@ -51,3 +51,25 @@ variable "create_snapshot" {
   type        = bool
   default     = true
 }
+
+variable "spot_enabled" {
+  description = "Enable Azure Spot discount for this VM (true=Spot, false=Regular). Toggle per-VM."
+  type        = bool
+  default     = false
+}
+
+variable "spot_eviction_policy" {
+  description = "Spot eviction policy: Deallocate (keep disk) or Delete (ephemeral)."
+  type        = string
+  default     = "Deallocate"
+  validation {
+    condition     = contains(["Deallocate", "Delete"], var.spot_eviction_policy)
+    error_message = "spot_eviction_policy must be Deallocate or Delete."
+  }
+}
+
+variable "spot_max_bid_price" {
+  description = "Max spot price in USD/hr, -1 means pay-as-you-go (no cap)."
+  type        = number
+  default     = -1
+}

@@ -3,59 +3,59 @@
     "cockroachdb":
       "hosts":
         "vm-crdb-lease-sea-01":
-          "ansible_host": "vm-crdb-lease-sea-01-gvhf41.southeastasia.cloudapp.azure.com"
+          "ansible_host": "vm-crdb-lease-sea-01-xxxxxx.southeastasia.cloudapp.azure.com"
           "ansible_user": "evan"
-          "fqdn": "vm-crdb-lease-sea-01-gvhf41.southeastasia.cloudapp.azure.com"
+          "fqdn": "vm-crdb-lease-sea-01-xxxxxx.southeastasia.cloudapp.azure.com"
           "location": "southeastasia"
-          "public_ip": "4.193.255.150"
+          "public_ip": "1.2.3.4"
         "vm-crdb-replica-ea-01":
-          "ansible_host": "vm-crdb-replica-ea-01-uzz8jt.eastasia.cloudapp.azure.com"
+          "ansible_host": "vm-crdb-replica-ea-01-xxxxxx.eastasia.cloudapp.azure.com"
           "ansible_user": "evan"
-          "fqdn": "vm-crdb-replica-ea-01-uzz8jt.eastasia.cloudapp.azure.com"
+          "fqdn": "vm-crdb-replica-ea-01-xxxxxx.eastasia.cloudapp.azure.com"
           "location": "eastasia"
-          "public_ip": "20.239.144.25"
-        "vm-crdb-replica-ea-02":
-          "ansible_host": "vm-crdb-replica-ea-02-h9249o.eastasia.cloudapp.azure.com"
+          "public_ip": "1.2.3.5"
+        "vm-crdb-replica-japaneast-01":
+          "ansible_host": "vm-crdb-replica-japaneast-01-xxxxxx.japaneast.cloudapp.azure.com"
           "ansible_user": "evan"
-          "fqdn": "vm-crdb-replica-ea-02-h9249o.eastasia.cloudapp.azure.com"
-          "location": "eastasia"
-          "public_ip": "20.255.73.203"
+          "fqdn": "vm-crdb-replica-japaneast-01-xxxxxx.japaneast.cloudapp.azure.com"
+          "location": "japaneast"
+          "public_ip": "1.2.3.6"
       "vars":
         "ansible_ssh_common_args": "-o StrictHostKeyChecking=no"
         "ansible_ssh_private_key_file": "~/.ssh/id_ed25519"
     "crdb_join":
       "hosts":
         "vm-crdb-replica-ea-01": {}
-        "vm-crdb-replica-ea-02": {}
+        "vm-crdb-replica-japaneast-01": {}
     "crdb_main":
       "hosts":
         "vm-crdb-lease-sea-01": {}
     "driver":
       "hosts":
         "vm-crdb-driver-sea-01":
-          "ansible_host": "vm-crdb-driver-sea-01-f696k4.southeastasia.cloudapp.azure.com"
+          "ansible_host": "vm-crdb-driver-sea-01-xxxxxx.southeastasia.cloudapp.azure.com"
           "ansible_user": "evan"
-          "fqdn": "vm-crdb-driver-sea-01-f696k4.southeastasia.cloudapp.azure.com"
+          "fqdn": "vm-crdb-driver-sea-01-xxxxxx.southeastasia.cloudapp.azure.com"
           "location": "southeastasia"
-          "public_ip": "52.148.66.209"
+          "public_ip": "1.2.3.7"
       "vars":
         "ansible_ssh_common_args": "-o StrictHostKeyChecking=no"
         "ansible_ssh_private_key_file": "~/.ssh/id_ed25519"
     "wireguard_peers":
       "hosts":
         "vm-crdb-replica-ea-01": {}
-        "vm-crdb-replica-ea-02": {}
+        "vm-crdb-replica-japaneast-01": {}
     "wireguard_server":
       "hosts":
         "vm-crdb-lease-sea-01": {}
     "workload_driver":
       "hosts":
         "vm-crdb-driver-sea-01":
-          "ansible_host": "vm-crdb-driver-sea-01-f696k4.southeastasia.cloudapp.azure.com"
+          "ansible_host": "vm-crdb-driver-sea-01-xxxxxx.southeastasia.cloudapp.azure.com"
           "ansible_user": "evan"
-          "fqdn": "vm-crdb-driver-sea-01-f696k4.southeastasia.cloudapp.azure.com"
+          "fqdn": "vm-crdb-driver-sea-01-xxxxxx.southeastasia.cloudapp.azure.com"
           "location": "southeastasia"
-          "public_ip": "52.148.66.209"
+          "public_ip": "1.2.3.7"
       "vars":
         "ansible_ssh_common_args": "-o StrictHostKeyChecking=no"
         "ansible_ssh_private_key_file": "~/.ssh/id_ed25519"

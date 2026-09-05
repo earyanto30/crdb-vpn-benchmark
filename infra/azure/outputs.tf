@@ -7,9 +7,9 @@ locals {
   #   vm-crdb-replica-ea-01  — CRDB replica n2 (EA, peer / crdb_join)
   #   vm-crdb-driver-sea-01  — workload driver (co-located SEA, WireGuard peer only)
   crdb_nodes = {
-    "vm-crdb-lease-sea-01"  = { net = module.net_lease_sea, vm = module.vm_crdb_lease_sea_01 }
-    "vm-crdb-replica-ea-01" = { net = module.net_replica_ea, vm = module.vm_crdb_replica_ea_01 }
-    "vm-crdb-replica-ea-02" = { net = module.net_replica_ea, vm = module.vm_crdb_replica_ea_02 }
+    "vm-crdb-lease-sea-01"         = { net = module.net_lease_sea, vm = module.vm_crdb_lease_sea_01 }
+    "vm-crdb-replica-ea-01"        = { net = module.net_replica_ea, vm = module.vm_crdb_replica_ea_01 }
+    "vm-crdb-replica-japaneast-01" = { net = module.net_replica_japaneast, vm = module.vm_crdb_replica_japaneast_01 }
   }
 
   driver_nodes = {

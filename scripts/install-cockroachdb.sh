@@ -36,7 +36,7 @@ else
 fi
 
 # --- Default Constants ---
-DEFAULT_DOWNLOAD_URL="http://192.168.129.2/downloads/cockroach-v26.2.5.linux-amd64.tgz"
+DEFAULT_DOWNLOAD_URL="https://binaries.cockroachdb.com/cockroach-v26.2.5.linux-amd64.tgz"
 DEFAULT_BIN_PATH="/usr/local/bin/cockroach"
 DEFAULT_SERVICE_USER="cockroach"
 DEFAULT_SERVICE_GROUP="cockroach"

@@ -48,3 +48,21 @@ variable "ssh_private_key_path" {
   type        = string
   default     = "~/.ssh/id_ed25519"
 }
+
+variable "spot_enabled" {
+  description = "Enable Azure Spot discount for all VMs. Per-VM toggle via spot_enabled in vm-*.tf (true=Spot 60-90% discount, evictable)."
+  type        = bool
+  default     = false
+}
+
+variable "spot_eviction_policy" {
+  description = "Spot eviction policy for all Spot VMs: Deallocate (keep OS disk for restore) or Delete."
+  type        = string
+  default     = "Deallocate"
+}
+
+variable "spot_max_bid_price" {
+  description = "Max Spot price USD/hr for all VMs, -1 = pay-as-you-go (no cap, up to Regular price)."
+  type        = number
+  default     = -1
+}

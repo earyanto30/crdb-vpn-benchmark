@@ -10,4 +10,8 @@ module "vm_crdb_driver_sea_01" {
   ssh_public_key      = var.ssh_public_key
   os_disk_size_gb     = var.os_disk_size_gb
   tags                = var.tags
+
+  spot_enabled         = false
+  spot_eviction_policy = var.spot_eviction_policy
+  spot_max_bid_price   = var.spot_max_bid_price
 }

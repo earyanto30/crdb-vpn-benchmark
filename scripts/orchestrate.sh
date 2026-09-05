@@ -81,7 +81,7 @@ restore_snapshot() {
   if [[ "$DRY" == "--dry" ]]; then echo "[dry] tofu restore all vms"; return 0; fi
   local log="/tmp/orch-restore-$$.log"
   {
-    for vm in vm-crdb-lease-sea-01 vm-crdb-replica-ea-01 vm-crdb-driver-sea-01; do
+    for vm in vm-crdb-lease-sea-01 vm-crdb-replica-ea-01 vm-crdb-replica-japaneast-01 vm-crdb-driver-sea-01; do
       tofu -chdir=infra/azure apply -auto-approve -var="restore_enabled=true" -var="restore_vm_name=$vm"
     done
     # wait for VMs to be back (port 22)
@@ -100,27 +100,24 @@ run_bench_iterations() {
   local phase="$1" # direct|wireguard|wireguard-go — 5 iterations just for benchmark, print output
   for iter in $(seq 1 5); do
     printf "%-55s " "benchmark $phase $iter/5..."
-    if [[ "$DRY" == "--dry" ]]; then echo "[dry] $WORKLOAD_BENCH"; step "save $phase/$iter" "save_result $phase $iter" > /dev/null; continue; fi
+    if [[ "$DRY" == "--dry" ]]; then echo "[dry] $WORKLOAD_BENCH"; printf "%-55s " "save $phase/$iter..."; echo "[dry] save_result $phase $iter"; continue; fi
     local log="/tmp/orch-bench-${phase}-${iter}-$$.log"
     if $WORKLOAD_BENCH >"$log" 2>&1; then
       echo "[ok]"
-      # print benchmark output (tpmC + CSV row) — as requested
+      # print benchmark output (actual tpmC data line, not header) — as requested
       echo "  --- benchmark $phase $iter tpmC ---"
-      grep -E 'tpmC|_elapsed.*tpmC' "$log" 2>/dev/null | tail -n 3 | sed 's/^/  /' || tail -n 20 "$log" | sed 's/^/  /'
-      # show CSV row that was appended
-      local csv="/home/evan/workload-results/benchmark.csv"
-      # try driver via ssh, fallback to controller tmp
-      if ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=5 "evan@$(python3 -c "import yaml; d=yaml.safe_load(open('$INVENTORY')); h=list(d['all']['children']['workload_driver']['hosts'].values())[0]; print(h.get('ansible_host',''))" 2>/dev/null)" "tail -n 1 $csv 2>/dev/null" 2>/dev/null | sed 's/^/  csv: /'; then true
-      else tail -n 1 playbook/setup-workload-driver/tmp/benchmark.csv 2>/dev/null | sed 's/^/  csv: /' || true
-      fi
-      # also show last 1 line of ansible output for tpmC
-      grep -E 'tpmC' "$log" 2>/dev/null | tail -n 1 | sed 's/^/  /' || true
+      grep -E '^[[:space:]]+[0-9]+\.[0-9]s[[:space:]]+[0-9]+\.[0-9]' "$log" 2>/dev/null | tail -n 1 | sed 's/^/  /' || tail -n 20 "$log" | sed 's/^/  /'
+      # show CSV row that was appended (from controller tmp, no ssh needed)
+      tail -n 1 playbook/setup-workload-driver/tmp/benchmark.csv 2>/dev/null | sed 's/^/  csv: /' || tail -n 1 "$RESULT_BASE/$phase/$iter/benchmark.csv" 2>/dev/null | sed 's/^/  csv: /' || true
     else
       echo "[fail]"
       tail -n 80 "$log" | sed 's/^/  /' >&2
       exit 1
     fi
-    step "save $phase/$iter" "save_result $phase $iter"
+    # save without bash -c (direct call, no export needed)
+    printf "%-55s " "save $phase/$iter..."
+    local slog="/tmp/orch-save-$$.log"
+    if save_result "$phase" "$iter" >"$slog" 2>&1; then echo "[ok]"; else echo "[fail]"; tail -n 20 "$slog" | sed 's/^/  /' >&2; exit 1; fi
   done
 }
 

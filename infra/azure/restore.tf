@@ -43,16 +43,16 @@ data "azurerm_snapshot" "restore_src" {
 resource "azurerm_managed_disk" "restore_disk" {
   count                = var.restore_enabled ? 1 : 0
   name                 = "restored-${var.restore_vm_name}-${formatdate("YYYYMMDDhhmmss", timestamp())}"
-  location             = azurerm_resource_group.cdb.location
+  location             = local.all_nodes[var.restore_vm_name].vm.compute.location
   resource_group_name  = azurerm_resource_group.cdb.name
   storage_account_type = "Premium_LRS"
   create_option        = "Copy"
   source_resource_id   = data.azurerm_snapshot.restore_src[0].id
   tags                 = var.tags
 
-  # keep disk on every apply with restore_enabled=true would recreate due to timestamp(); ignore unless tainted
+  # ignore name/tags changes so timestamp() doesn't force recreation on every apply
   lifecycle {
-    ignore_changes = [tags]
+    ignore_changes = [name, tags]
   }
 }
 

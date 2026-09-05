@@ -44,6 +44,9 @@ resource "azurerm_linux_virtual_machine" "cdb" {
   resource_group_name = var.resource_group_name
   size                = var.vm_size
   admin_username      = var.admin_username
+  priority            = var.spot_enabled ? "Spot" : "Regular"
+  eviction_policy     = var.spot_enabled ? var.spot_eviction_policy : null
+  max_bid_price       = var.spot_enabled ? var.spot_max_bid_price : null
   tags                = var.tags
 
   network_interface_ids = [
@@ -77,12 +80,12 @@ resource "azurerm_linux_virtual_machine" "cdb" {
 # Incremental snapshot of the managed OS disk, created after VM is provisioned.
 # One snapshot per VM (snap-<name>), re-used on subsequent applies unless tainted.
 resource "azurerm_snapshot" "os_disk" {
-  count                 = var.create_snapshot ? 1 : 0
-  name                  = "snap-${var.name}"
-  location              = var.location
-  resource_group_name   = var.resource_group_name
-  create_option         = "Copy"
-  source_resource_id    = azurerm_linux_virtual_machine.cdb.os_disk[0].id
-  incremental_enabled   = true
-  tags                  = var.tags
+  count               = var.create_snapshot ? 1 : 0
+  name                = "snap-${var.name}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  create_option       = "Copy"
+  source_resource_id  = azurerm_linux_virtual_machine.cdb.os_disk[0].id
+  incremental_enabled = true
+  tags                = var.tags
 }

@@ -21,4 +21,8 @@ module "vm_crdb_lease_sea_01" {
   ssh_public_key      = var.ssh_public_key
   os_disk_size_gb     = var.os_disk_size_gb
   tags                = var.tags
+
+  spot_enabled         = true
+  spot_eviction_policy = var.spot_eviction_policy
+  spot_max_bid_price   = var.spot_max_bid_price
 }
