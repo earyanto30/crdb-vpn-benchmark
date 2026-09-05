@@ -1,0 +1,77 @@
+---
+# =============================================================================
+# CockroachDB — vars/cockroach.yml
+# Copy to vars/cockroach.yml and edit. This file is gitignored.
+# =============================================================================
+
+# ── Binary ─────────────────────────────────────────────────────────────────
+# HTTP URL that hosts the CockroachDB tarball (same default as scripts/install-cockroachdb.sh)
+crdb_download_url: "https://binaries.cockroachdb.com/cockroach-v26.2.5.linux-amd64.tgz"
+crdb_bin_path: /usr/local/bin/cockroach
+
+# ── System user / group / filesystem layout ────────────────────────────────
+crdb_user: cockroach
+crdb_group: cockroach
+# store is CockroachDB --store flag. Must be a directory that cockroach can write to.
+crdb_store_dir: /var/lib/cockroach/data
+crdb_certs_dir: /var/lib/cockroach/certs
+crdb_ca_dir: /var/lib/cockroach/ca
+
+# ── Ports ──────────────────────────────────────────────────────────────────
+crdb_sql_port: 26257
+crdb_http_port: 8080
+# Bind for Admin UI. 0.0.0.0 = remote access, 127.0.0.1 = localhost only.
+crdb_http_bind: "0.0.0.0"
+
+# ── Systemd ────────────────────────────────────────────────────────────────
+crdb_service_name: cockroachdb
+
+# ── Network — advertisement / join mode ────────────────────────────────────
+# Switch between the two deployment scenarios by changing one variable:
+#
+#   direct    → advertise and join via the node's public/direct IP
+#               (ansible_host / public_ip / ansible_default_ipv4.address)
+#               Suitable when all nodes are on the same VNet or reachable over public IP.
+#
+#   wireguard → advertise and join via the WireGuard tunnel IP (wg0 / wireguard-go)
+#               Suitable when nodes are in different regions/VNets and communicate
+#               over WireGuard. Before running this playbook, ensure WireGuard is up
+#               (playbook/setup-wireguard or playbook/setup-wireguard-go).
+#
+crdb_advertise_mode: wireguard            # direct | wireguard
+crdb_wireguard_interface: wg0          # interface name for both kernel WireGuard and wireguard-go
+
+# Optional manual overrides (leave empty for auto-detection):
+#   — WireGuard: force a specific tunnel IP instead of auto-detecting from the interface.
+#     Useful if `ip addr show` is unavailable or you want to pin the address.
+#   — Direct: force a specific IP/hostname instead of ansible_host / public_ip.
+crdb_wireguard_ip_override: ""         # e.g. "10.10.0.1"
+crdb_advertise_host_override: ""       # e.g. "10.0.1.4" or "cockroach.example.com"
+
+# Join address for join-cluster.yml. Leave empty to auto-resolve:
+#   direct    → <crdb_main ansible_host>:26257
+#   wireguard → <crdb_main wireguard IP>:26257
+crdb_join_addr: ""
+
+# ── TLS SANs ───────────────────────────────────────────────────────────────
+# Additional Subject Alternative Names added to node certificates.
+# Each joining node automatically gets: <advertise_host>, <inventory_hostname>,
+# <ansible_hostname>, localhost, 127.0.0.1, plus anything listed here.
+crdb_extra_sans: []
+# Example:
+# crdb_extra_sans:
+#   - cockroach.local
+#   - crdb.service.consul
+
+# ── Database bootstrap user ────────────────────────────────────────────────
+# Created at the end of create-cluster.yml (production-grade cluster requires at least one admin).
+crdb_db_admin_user: dbadmin
+crdb_db_admin_password: dbadmin
+
+# ── Binary reinstall ───────────────────────────────────────────────────────
+# Force re-download and reinstall even if binary already exists.
+crdb_force_reinstall: false
+
+# ── Internal ───────────────────────────────────────────────────────────────
+# Temporary directory used on the CA host to stage joining-node certificate bundles.
+crdb_tmp_bundle_dir: /tmp/crdb-certs

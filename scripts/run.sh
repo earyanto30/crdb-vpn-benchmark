@@ -136,6 +136,22 @@ check_prerequisites() {
   local account_name
   account_name=$(az account show --query name -o tsv 2>/dev/null || echo "unknown")
   say_success "Azure account verified: ${account_name}"
+
+  # Ensure all playbook vars files exist (auto-initialize from -example if absent)
+  local var_files=(
+    "setup-cockroachdb/vars/cockroach"
+    "setup-wireguard/vars/wireguard"
+    "setup-wireguard-go/vars/wireguard"
+    "setup-workload-driver/vars/driver"
+  )
+  for item in "${var_files[@]}"; do
+    local target_yml="${PLAYBOOK_DIR}/${item}.yml"
+    local example_yml="${PLAYBOOK_DIR}/${item}.yml-example"
+    if [[ ! -f "${target_yml}" && -f "${example_yml}" ]]; then
+      cp "${example_yml}" "${target_yml}"
+      say_info "Auto-initialized ${item}.yml from example template"
+    fi
+  done
 }
 
 # --- Infrastructure Reality Check ---

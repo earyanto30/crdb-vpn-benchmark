@@ -13,7 +13,15 @@
     - vars/wireguard.yml
   vars:
     wg_role: server
-    wg_addr: "{{ wg_server_wg_ip }}"
+    wg_interface: "{{ wg_interface | default('wg0') }}"
+    wg_server_wg_ip: "{{ wg_server_wg_ip | default('10.10.0.1') }}"
+    wg_addr: "{{ wg_server_wg_ip | default('10.10.0.1') }}"
+    wgg_golang_apt: "{{ wgg_golang_apt | default('golang-go') }}"
+    wgg_version: "{{ wgg_version | default('latest') }}"
+    wgg_go_package: "{{ wgg_go_package | default('golang.zx2c4.com/wireguard/cmd/wireguard-go') }}"
+    wgg_bin: "{{ wgg_bin | default('/usr/local/bin/wireguard-go') }}"
+    wgg_service_name: "{{ wgg_service_name | default('wireguard-go-' + (wg_interface | default('wg0')) + '.service') }}"
+    wgg_cleanup_golang: "{{ wgg_cleanup_golang | default(false) }}"
 
   tasks:
     - name: Install WireGuard tools, iptables, and Go toolchain

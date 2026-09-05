@@ -1,3 +1,2 @@
 tmp/
 *.retry
-vars/wireguard.yml
