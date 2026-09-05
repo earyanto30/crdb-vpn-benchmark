@@ -1,0 +1,2 @@
+timestamp,db_type,host,port,warehouses,concurrency,duration,tpmC,efficiency_pct,avg_ms,p50_ms,p90_ms,p95_ms,p99_ms,pMax_ms,ops_total,errors,log_file,hist_file,rc
+2026-09-05T15:24:10Z,cockroach,vm-crdb-lease-sea-01-w8n85u.southeastasia.cloudapp.azure.com,26257,4,50,1m,52.0,101.1,605.4,469.8,1006.6,1208.0,1409.3,1476.4,,,/home/evan/workload-results/tpcc-20260905T152303Z.log,/home/evan/workload-results/tpcc-20260905T152303Z.hist.json,0

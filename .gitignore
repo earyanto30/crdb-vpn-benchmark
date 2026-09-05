@@ -7,3 +7,4 @@ playbook/inventory.yml
 inventory.yml
 workload-results/
 workload-result/
+.pipeline_state
