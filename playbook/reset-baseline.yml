@@ -37,14 +37,16 @@
 
     - name: Force kill any lingering CockroachDB or WireGuard processes
       ansible.builtin.shell: |
-        pkill -9 -f "cockroach" || true
-        pkill -9 -f "wireguard" || true
+        pkill -9 -x cockroach || true
+        pkill -9 -x wireguard-go || true
+      failed_when: false
       changed_when: false
 
     - name: Tear down WireGuard interface if present
       ansible.builtin.shell: |
         wg-quick down wg0 2>/dev/null || true
         ip link delete wg0 2>/dev/null || true
+      failed_when: false
       changed_when: false
 
     - name: Clean WireGuard iptables rules if present
@@ -52,6 +54,7 @@
         iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
         iptables -D FORWARD -o wg0 -j ACCEPT 2>/dev/null || true
         iptables -t nat -D POSTROUTING -s 10.10.0.0/24 -o eth0 -j MASQUERADE 2>/dev/null || true
+      failed_when: false
       changed_when: false
 
     - name: Remove custom systemd service units
@@ -66,6 +69,7 @@
     - name: Reload systemd daemon
       ansible.builtin.systemd:
         daemon_reload: true
+      failed_when: false
 
     - name: Wipe database directories and certificates
       ansible.builtin.file:
