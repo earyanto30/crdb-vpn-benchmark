@@ -3,8 +3,8 @@ module "net_replica_ea" {
 
   name                = "vm-crdb-replica-ea-01"
   location            = "eastasia"
-  address_space       = "10.0.0.0/16"
-  subnet_prefix       = "10.0.1.0/24"
+  address_space       = "10.1.0.0/16"
+  subnet_prefix       = "10.1.1.0/24"
   resource_group_name = azurerm_resource_group.cdb.name
   tags                = var.tags
 }

@@ -3,8 +3,8 @@ module "net_replica_japaneast" {
 
   name                = "vm-crdb-replica-japaneast-01"
   location            = "japaneast"
-  address_space       = "10.0.0.0/16"
-  subnet_prefix       = "10.0.1.0/24"
+  address_space       = "10.2.0.0/16"
+  subnet_prefix       = "10.2.1.0/24"
   resource_group_name = azurerm_resource_group.cdb.name
   tags                = var.tags
 }
@@ -12,10 +12,10 @@ module "net_replica_japaneast" {
 module "vm_crdb_replica_japaneast_01" {
   source = "./modules/compute"
 
-  name                = "vm-crdb-replica-ea-01"
+  name                = "vm-crdb-replica-japaneast-01"
   location            = "japaneast"
   resource_group_name = azurerm_resource_group.cdb.name
-  subnet_id           = module.net_replica_ea.subnet_id
+  subnet_id           = module.net_replica_japaneast.subnet_id
   vm_size             = var.vm_size
   admin_username      = var.admin_username
   ssh_public_key      = var.ssh_public_key
