@@ -1,0 +1,89 @@
+---
+# =============================================================================
+# reset-baseline.yml — Revert all cluster and driver nodes to pre-scenario baseline
+#
+# Target hosts: all (cockroachdb + driver)
+# Run         : ansible-playbook -i <inventory> reset-baseline.yml
+#
+# What it does:
+#   1) Stops and disables all scenario services (cockroachdb, wg-quick@wg0, wireguard-go-wg0)
+#   2) Force terminates any remaining cockroach or wireguard processes
+#   3) Deletes the WireGuard network interface (wg0)
+#   4) Flushes custom iptables rules added by WireGuard
+#   5) Removes systemd unit files installed by the playbooks
+#   6) Wipes all CockroachDB data stores, logs, CA keys, and certificates
+#   7) Wipes all WireGuard configurations and keys
+#   8) Wipes workload driver results, histograms, and staged certificates
+#   9) Reloads systemd daemon
+# =============================================================================
+
+- name: Reset all cluster and driver nodes to clean baseline
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Stop and disable scenario services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      failed_when: false
+      loop:
+        - cockroachdb
+        - wg-quick@wg0
+        - wireguard-go-wg0
+        - wireguard-go
+
+    - name: Force kill any lingering CockroachDB or WireGuard processes
+      ansible.builtin.shell: |
+        pkill -9 -f "cockroach" || true
+        pkill -9 -f "wireguard" || true
+      changed_when: false
+
+    - name: Tear down WireGuard interface if present
+      ansible.builtin.shell: |
+        wg-quick down wg0 2>/dev/null || true
+        ip link delete wg0 2>/dev/null || true
+      changed_when: false
+
+    - name: Clean WireGuard iptables rules if present
+      ansible.builtin.shell: |
+        iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
+        iptables -D FORWARD -o wg0 -j ACCEPT 2>/dev/null || true
+        iptables -t nat -D POSTROUTING -s 10.10.0.0/24 -o eth0 -j MASQUERADE 2>/dev/null || true
+      changed_when: false
+
+    - name: Remove custom systemd service units
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/cockroachdb.service
+        - /etc/systemd/system/wireguard-go-wg0.service
+        - /etc/systemd/system/wireguard-go.service
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Wipe database directories and certificates
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/cockroach
+        - /etc/cockroach
+        - /etc/wireguard
+        - /var/log/cockroach
+        - /tmp/crdb-certs
+
+    - name: Wipe workload driver results and client certificates
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /home/{{ ansible_user | default('evan') }}/workload-results
+        - /home/{{ ansible_user | default('evan') }}/driver-certs
+        - /tmp/driver-certs
+        - /tmp/crdb-certs

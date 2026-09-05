@@ -46,12 +46,6 @@ variable "tags" {
   default     = {}
 }
 
-variable "create_snapshot" {
-  description = "Create incremental snapshot of OS disk after VM creation."
-  type        = bool
-  default     = true
-}
-
 variable "spot_enabled" {
   description = "Enable Azure Spot discount for this VM (true=Spot, false=Regular). Toggle per-VM."
   type        = bool

@@ -26,8 +26,3 @@ output "connection" {
     vm_size        = azurerm_linux_virtual_machine.cdb.size
   }
 }
-
-output "os_disk_snapshot" {
-  description = "OS disk snapshot (if create_snapshot=true)."
-  value       = try(azurerm_snapshot.os_disk[0], null)
-}

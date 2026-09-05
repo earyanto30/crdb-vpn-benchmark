@@ -75,12 +75,17 @@ done
 
 ---
 
-## Snapshot & Restore Mechanism
+## In-Place Baseline Reset Mechanism
 
-Between benchmark scenarios, `scripts/run.sh` restores each node's OS disk back to a clean baseline snapshot using Azure CLI (`az`).
+Between benchmark scenarios, `scripts/run.sh` executes [`playbook/reset-baseline.yml`](playbook/reset-baseline.yml) across all nodes concurrently rather than performing slow and risky OS disk swaps or VM deallocations.
 
-### SSH-Readiness Gating
-To prevent capturing snapshots during early guest OS boot (before `sshd` is active and SSH host keys have been generated), `infra/azure/modules/compute/main.tf` introduces an explicit readiness gate:
-- `null_resource.wait_for_ssh` attempts SSH connectivity for up to 300 seconds.
-- `azurerm_snapshot.os_disk` explicitly depends on `null_resource.wait_for_ssh`.
-- If SSH does not become ready within 300 seconds, provisioning fails loudly rather than capturing an unbooted or unreachable OS disk.
+### Why In-Place Reset:
+- **Zero Spot VM Eviction Risk**: VMs remain continuously running, eliminating the danger of losing Spot compute capacity during deallocation in competitive Azure regions.
+- **Blazing Fast**: Takes **~10–15 seconds** total instead of 3–5 minutes for cloud disk snapshots.
+- **Complete Reversion**:
+  - Stops and disables `cockroachdb`, `wg-quick@wg0`, and `wireguard-go` systemd services.
+  - Force terminates any remaining background processes.
+  - Deletes `wg0` network interfaces and cleans WireGuard iptables forwarding rules.
+  - Wipes `/var/lib/cockroach` (database data & store), `/etc/cockroach` (certificates & CA keys), and `/etc/wireguard`.
+  - Wipes workload driver results, histograms, and driver client certificates.
+  - Clears controller-side local temporary staging keys and certificates.

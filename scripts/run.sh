@@ -9,13 +9,13 @@
 #      - Ansible: setup-cockroachdb (create-cluster & join-cluster in direct mode)
 #      - Ansible: setup-workload-driver/setup.yml
 #      - 5 iterations: benchmark.yml -> save & transfer to ./workload-result/direct/{iteration}
-#   4. Restore OS disk snapshots using Azure CLI (`az`) dynamically from OpenTofu state
+#   4. In-place node baseline reset (playbook/reset-baseline.yml)
 #   5. Scenario 2: Kernel WireGuard
 #      - Ansible: setup-wireguard (server & join-peer)
 #      - Ansible: setup-cockroachdb (create-cluster & join-cluster in wireguard mode)
 #      - Ansible: setup-workload-driver/setup.yml
 #      - 5 iterations: benchmark.yml -> save & transfer to ./workload-result/wireguard/{iteration}
-#   6. Restore OS disk snapshots using Azure CLI (`az`) dynamically from OpenTofu state
+#   6. In-place node baseline reset (playbook/reset-baseline.yml)
 #   7. Scenario 3: Userspace WireGuard-Go
 #      - Ansible: setup-wireguard-go (server & join-peer)
 #      - Ansible: setup-cockroachdb (create-cluster & join-cluster in wireguard mode)
@@ -275,226 +275,36 @@ save_and_transfer_benchmark() {
   ls -lh "${dest_dir}" | tail -n +2 | sed 's/^/    /' || true
 }
 
-# --- Snapshot Restore via Azure CLI (No hardcoding, reading from OpenTofu state) ---
-restore_snapshots_from_tfstate() {
-  say_step "Restoring VM OS disk snapshots via Azure CLI (discovered from OpenTofu state)"
+## --- Cluster Baseline Reset via Ansible (In-Place Reset) ---
+reset_cluster_baseline() {
+  local target_scenario="${1:-next scenario}"
+  say_step "Resetting all cluster and driver nodes to clean baseline (before ${target_scenario})"
 
-  # Dynamically extract all VM name, resource group, location, and snapshot ID pairs from OpenTofu state
-  local targets
-  targets=$(python3 - <<EOF
-import json, sys, os, subprocess
-
-targets = []
-
-# Method 1: Read via 'tofu show -json'
-try:
-    proc = subprocess.run(
-        ["tofu", "-chdir=${TF_DIR}", "show", "-json"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=True
-    )
-    if proc.stdout.strip():
-        data = json.loads(proc.stdout)
-        def walk_module(mod):
-            resources = mod.get("resources", [])
-            vms = [r for r in resources if r.get("type") == "azurerm_linux_virtual_machine"]
-            snaps = [r for r in resources if r.get("type") == "azurerm_snapshot"]
-            if vms and snaps:
-                vm_val = vms[0].get("values", {})
-                snap_val = snaps[0].get("values", {})
-                targets.append({
-                    "vm_name": vm_val.get("name"),
-                    "resource_group": vm_val.get("resource_group_name") or snap_val.get("resource_group_name"),
-                    "location": vm_val.get("location") or snap_val.get("location"),
-                    "snapshot_id": snap_val.get("id")
-                })
-            for child in mod.get("child_modules", []):
-                walk_module(child)
-
-        root = data.get("values", {}).get("root_module", {})
-        walk_module(root)
-except Exception:
-    pass
-
-# Method 2: Fallback to reading terraform.tfstate directly
-tfstate_path = os.path.join("${TF_DIR}", "terraform.tfstate")
-if not targets and os.path.isfile(tfstate_path):
-    try:
-        with open(tfstate_path) as f:
-            data = json.load(f)
-        vms_by_mod = {}
-        snaps_by_mod = {}
-        vms_by_name = {}
-        snaps_by_name = {}
-        for r in data.get("resources", []):
-            rtype = r.get("type")
-            mod = r.get("module", "")
-            for inst in r.get("instances", []):
-                attrs = inst.get("attributes", {})
-                if rtype == "azurerm_linux_virtual_machine":
-                    vm_data = {
-                        "vm_name": attrs.get("name"),
-                        "resource_group": attrs.get("resource_group_name"),
-                        "location": attrs.get("location"),
-                        "id": attrs.get("id")
-                    }
-                    vms_by_mod[mod] = vm_data
-                    vms_by_name[attrs.get("name")] = vm_data
-                elif rtype == "azurerm_snapshot":
-                    snap_data = {
-                        "snapshot_id": attrs.get("id"),
-                        "snapshot_name": attrs.get("name"),
-                        "resource_group": attrs.get("resource_group_name"),
-                        "location": attrs.get("location")
-                    }
-                    snaps_by_mod[mod] = snap_data
-                    snaps_by_name[attrs.get("name")] = snap_data
-
-        for mod, vm in vms_by_mod.items():
-            snap = snaps_by_mod.get(mod) or snaps_by_name.get(f"snap-{vm['vm_name']}")
-            if snap and snap.get("snapshot_id"):
-                targets.append({
-                    "vm_name": vm["vm_name"],
-                    "resource_group": vm["resource_group"] or snap["resource_group"],
-                    "location": vm["location"] or snap["location"],
-                    "snapshot_id": snap["snapshot_id"]
-                })
-    except Exception:
-        pass
-
-for t in targets:
-    if t.get("vm_name") and t.get("snapshot_id"):
-        print(f"{t['vm_name']}\t{t['resource_group']}\t{t['location']}\t{t['snapshot_id']}")
-EOF
-)
-
-  if [[ -z "${targets}" ]]; then
-    die "Could not find any VM snapshot pairs in OpenTofu state. Ensure infrastructure is provisioned."
+  # Ensure inventory exists
+  if [[ ! -s "${INVENTORY}" ]]; then
+    export_inventory
   fi
 
-  say_info "Discovered restore targets from OpenTofu state:"
-  echo "${targets}" | while IFS=$'\t' read -r vm rg loc snap; do
-    say_info "  - VM: ${vm} (RG: ${rg}, Region: ${loc})"
-    say_info "    Source Snapshot: ${snap}"
-  done
+  # Purge local controller temp staging directories
+  say_info "Purging local controller staging certificates and temp files..."
+  rm -rf "${PLAYBOOK_DIR}/setup-cockroachdb/tmp"
+  rm -rf "${PLAYBOOK_DIR}/setup-wireguard/tmp"
+  rm -rf "${PLAYBOOK_DIR}/setup-wireguard-go/tmp"
+  rm -rf "${PLAYBOOK_DIR}/setup-workload-driver/tmp"
+  rm -rf "${PLAYBOOK_DIR}/tmp"
+  mkdir -p "${PLAYBOOK_DIR}/tmp"
 
-  local ts
-  ts=$(date +%s)
-  declare -A new_disk_names
-  declare -A old_disk_ids
+  # Run the in-place reset playbook across all nodes
+  say_info "Executing in-place teardown playbook (reset-baseline.yml)..."
+  ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/reset-baseline.yml"
 
-  # Phase 1: Parallel disk creation from snapshot & parallel VM deallocation
-  say_info "Initiating parallel disk creation and VM deallocation..."
-  while IFS=$'\t' read -r vm rg loc snap; do
-    [[ -z "${vm}" ]] && continue
-    local disk_name="restored-${vm}-${ts}"
-    new_disk_names["${vm}"]="${disk_name}"
-
-    # Query current OS disk ID to clean up after swap
-    local old_disk
-    old_disk=$(az vm show -g "${rg}" -n "${vm}" --query "storageProfile.osDisk.managedDisk.id" -o tsv 2>/dev/null || true)
-    old_disk_ids["${vm}"]="${old_disk}"
-
-    say_info "[${vm}] Creating managed disk '${disk_name}' from snapshot..."
-    az disk create \
-      --resource-group "${rg}" \
-      --name "${disk_name}" \
-      --source "${snap}" \
-      --location "${loc}" \
-      --sku "Premium_LRS" \
-      --no-wait &
-
-    say_info "[${vm}] Deallocating VM..."
-    az vm deallocate --resource-group "${rg}" --name "${vm}" --no-wait &
-  done <<< "${targets}"
-
-  # Wait for all background CLI operations to finish
-  wait
-
-  # Phase 2: Await disk readiness and VM deallocation completion
-  say_info "Waiting for disks to be created and VMs to reach deallocated state..."
-  while IFS=$'\t' read -r vm rg loc snap; do
-    [[ -z "${vm}" ]] && continue
-    local disk_name="${new_disk_names[${vm}]}"
-    
-    say_info "[${vm}] Waiting for managed disk '${disk_name}'..."
-    az disk wait --resource-group "${rg}" --name "${disk_name}" --created
-
-    say_info "[${vm}] Waiting for VM deallocation..."
-    az vm wait --resource-group "${rg}" --name "${vm}" --custom "instanceView.statuses[?code=='PowerState/deallocated']"
-  done <<< "${targets}"
-
-  # Phase 3: Swap OS disks to restored managed disk
-  say_info "Swapping OS disks for all VMs..."
-  while IFS=$'\t' read -r vm rg loc snap; do
-    [[ -z "${vm}" ]] && continue
-    local disk_name="${new_disk_names[${vm}]}"
-    local new_disk_id
-    new_disk_id=$(az disk show --resource-group "${rg}" --name "${disk_name}" --query id -o tsv)
-
-    say_info "[${vm}] Swapping OS disk to ${new_disk_id}..."
-    az vm update --resource-group "${rg}" --name "${vm}" --os-disk "${new_disk_id}" --only-show-errors
-
-    # Clean up previous detached disk to free storage quota
-    local old_id="${old_disk_ids[${vm}]:-}"
-    if [[ -n "${old_id}" && "${old_id}" != "${new_disk_id}" ]]; then
-      say_info "[${vm}] Cleaning up previous detached disk: ${old_id}"
-      az disk delete --ids "${old_id}" --yes --no-wait 2>/dev/null || true
-    fi
-  done <<< "${targets}"
-
-  # Phase 4: Start all VMs in parallel
-  say_info "Starting all VMs in parallel..."
-  while IFS=$'\t' read -r vm rg loc snap; do
-    [[ -z "${vm}" ]] && continue
-    say_info "[${vm}] Powering on..."
-    az vm start --resource-group "${rg}" --name "${vm}" --no-wait &
-  done <<< "${targets}"
-
-  wait
-
-  # Phase 5: Wait for all VMs to reach PowerState/running
-  say_info "Awaiting running power state on all VMs..."
-  while IFS=$'\t' read -r vm rg loc snap; do
-    [[ -z "${vm}" ]] && continue
-    say_info "[${vm}] Waiting for power state 'running'..."
-    az vm wait --resource-group "${rg}" --name "${vm}" --custom "instanceView.statuses[?code=='PowerState/running']"
-  done <<< "${targets}"
-
-  # Phase 6: Clean up controller-side temporary staging artifacts from previous run
-  say_info "Purging local controller staging keys and certificates (playbook/tmp)..."
-  rm -rf "${PLAYBOOK_DIR}/tmp"/* 2>/dev/null || true
-
-  # Phase 7: Wait for SSH to be fully ready across all inventory hosts
-  say_step "Verifying SSH connectivity on all hosts..."
-  local max_attempts=40
-  local attempt=1
-  local ready=false
-
-  while [[ ${attempt} -le ${max_attempts} ]]; do
-    local total_hosts
-    total_hosts=$(ansible -i "${INVENTORY}" all --list-hosts 2>/dev/null | tail -n +2 | wc -l)
-    local success_hosts
-    success_hosts=$(ansible -i "${INVENTORY}" all -m ping -o 2>/dev/null | grep -c "SUCCESS" || true)
-
-    if [[ ${total_hosts} -gt 0 && ${success_hosts} -ge ${total_hosts} ]]; then
-      say_success "All ${total_hosts} hosts are online and responding to SSH!"
-      ready=true
-      break
-    fi
-
-    say_info "SSH verification attempt ${attempt}/${max_attempts} (${success_hosts}/${total_hosts} hosts online) — waiting 6s..."
-    sleep 6
-    attempt=$((attempt + 1))
-  done
-
-  if [[ "${ready}" != "true" ]]; then
-    die "Timed out waiting for SSH connectivity on all hosts after snapshot restore."
+  # Quick connectivity verification
+  say_info "Verifying SSH connectivity across all nodes..."
+  if ! ansible -i "${INVENTORY}" all -m ping -o >/dev/null 2>&1; then
+    die "Failed to reach all hosts via SSH after baseline reset."
   fi
 
-  say_success "Snapshot restoration complete. All nodes are clean and ready."
+  say_success "Baseline reset complete. All nodes are clean and ready."
 }
 
 # ==============================================================================
@@ -587,13 +397,13 @@ main() {
   done
 
   # ----------------------------------------------------------------------------
-  # Step 4: Restore Snapshot before Scenario 2
+  # Step 4: Reset Nodes to Clean Baseline before Scenario 2
   # ----------------------------------------------------------------------------
-  if is_step_done "restore_snapshot_before_wireguard"; then
-    say_info "Snapshot restore before WireGuard scenario already completed. Skipping."
+  if is_step_done "reset_before_wireguard"; then
+    say_info "Baseline reset before WireGuard scenario already completed. Skipping."
   else
-    restore_snapshots_from_tfstate
-    mark_step_done "restore_snapshot_before_wireguard"
+    reset_cluster_baseline "Scenario 2 (WireGuard)"
+    mark_step_done "reset_before_wireguard"
   fi
 
   # ----------------------------------------------------------------------------
@@ -655,13 +465,13 @@ main() {
   done
 
   # ----------------------------------------------------------------------------
-  # Step 6: Restore Snapshot before Scenario 3
+  # Step 6: Reset Nodes to Clean Baseline before Scenario 3
   # ----------------------------------------------------------------------------
-  if is_step_done "restore_snapshot_before_wireguard_go"; then
-    say_info "Snapshot restore before WireGuard-Go scenario already completed. Skipping."
+  if is_step_done "reset_before_wireguard_go"; then
+    say_info "Baseline reset before WireGuard-Go scenario already completed. Skipping."
   else
-    restore_snapshots_from_tfstate
-    mark_step_done "restore_snapshot_before_wireguard_go"
+    reset_cluster_baseline "Scenario 3 (WireGuard-Go)"
+    mark_step_done "reset_before_wireguard_go"
   fi
 
   # ----------------------------------------------------------------------------
