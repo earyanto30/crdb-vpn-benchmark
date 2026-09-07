@@ -8,7 +8,7 @@
 # What it does:
 #   1) Resolves cluster target host and connection variables using driver vars
 #   2) Drops existing tpcc database (DROP DATABASE IF EXISTS tpcc CASCADE)
-#   3) Re-imports TPC-C fixture at configured warehouse scale
+#   3) Re-imports TPC-C fixture at configured warehouse scale via TLS connection URI
 # =============================================================================
 
 - name: Reset TPC-C data on cluster from workload driver
@@ -28,6 +28,17 @@
         tpcc_warehouses: "{{ driver_tpcc_warehouses | default(10) }}"
         crdb_auth_flag: "--certs-dir={{ driver_certs_dir }}"
 
+    - name: Build TPC-C fixture connection URL
+      ansible.builtin.set_fact:
+        crdb_conn_url: >-
+          {{
+            'postgresql://root@' ~ crdb_host ~ ':' ~ crdb_sql_port ~
+            '?sslmode=require&sslrootcert=' ~ driver_certs_dir ~ '/ca.crt&sslcert=' ~ driver_certs_dir ~
+            '/client.root.crt&sslkey=' ~ driver_certs_dir ~ '/client.root.key'
+            if (driver_certs_dir is defined and driver_certs_dir | length > 0)
+            else 'postgresql://root@' ~ crdb_host ~ ':' ~ crdb_sql_port ~ '?sslmode=disable'
+          }}
+
   tasks:
     - name: Drop tpcc database if it exists
       ansible.builtin.shell: >
@@ -38,6 +49,6 @@
     - name: Re-import TPC-C fixture at configured scale
       ansible.builtin.shell: >
         cockroach workload fixtures import tpcc
-        --warehouses={{ tpcc_warehouses }} {{ crdb_auth_flag }}
-        "postgresql://root@{{ crdb_host }}:{{ crdb_sql_port }}?sslmode=disable"
+        --warehouses={{ tpcc_warehouses }}
+        "{{ crdb_conn_url }}"
       changed_when: true
