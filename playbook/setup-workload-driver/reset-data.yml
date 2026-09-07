@@ -6,7 +6,7 @@
 # Run         : ansible-playbook -i inventory.yml reset-data.yml
 #
 # What it does:
-#   1) Resolves cluster target host and connection variables
+#   1) Resolves cluster target host and connection variables using driver vars
 #   2) Drops existing tpcc database (DROP DATABASE IF EXISTS tpcc CASCADE)
 #   3) Re-imports TPC-C fixture at configured warehouse scale
 # =============================================================================
@@ -16,7 +16,6 @@
   become: true
   vars_files:
     - vars/driver.yml
-    - ../setup-cockroachdb/vars/cockroach.yml
 
   pre_tasks:
     - name: Resolve target host and connection variables
@@ -25,9 +24,9 @@
           {{ crdb_host if (crdb_host is defined and crdb_host | length > 0)
              else (driver_target_host if (driver_target_host is defined and driver_target_host | length > 0)
              else hostvars[groups['crdb_main'][0]]['ansible_host'] | default(hostvars[groups['crdb_main'][0]]['public_ip'])) }}
-        crdb_sql_port: "{{ crdb_sql_port | default(driver_sql_port | default(26257)) }}"
-        tpcc_warehouses: "{{ tpcc_warehouses | default(driver_tpcc_warehouses | default(10)) }}"
-        crdb_auth_flag: "{{ crdb_auth_flag | default('--certs-dir=' ~ (driver_certs_dir | default('/home/evan/cockroach-certs'))) }}"
+        crdb_sql_port: "{{ driver_sql_port | default(26257) }}"
+        tpcc_warehouses: "{{ driver_tpcc_warehouses | default(10) }}"
+        crdb_auth_flag: "--certs-dir={{ driver_certs_dir }}"
 
   tasks:
     - name: Drop tpcc database if it exists
