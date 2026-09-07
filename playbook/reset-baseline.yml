@@ -1,21 +1,5 @@
 ---
-# =============================================================================
-# reset-baseline.yml — Revert all cluster and driver nodes to pre-scenario baseline
-#
-# Target hosts: all (cockroachdb + driver)
-# Run         : ansible-playbook -i <inventory> reset-baseline.yml
-#
-# What it does:
-#   1) Stops and disables all scenario services (cockroachdb, wg-quick@wg0, wireguard-go-wg0)
-#   2) Force terminates any remaining cockroach or wireguard processes
-#   3) Deletes the WireGuard network interface (wg0)
-#   4) Flushes custom iptables rules added by WireGuard
-#   5) Removes systemd unit files installed by the playbooks
-#   6) Wipes all CockroachDB data stores, logs, CA keys, and certificates
-#   7) Wipes all WireGuard configurations and keys
-#   8) Wipes workload driver results, histograms, and staged certificates
-#   9) Reloads systemd daemon
-# =============================================================================
+# Revert all cluster and driver nodes to pre-scenario baseline
 
 - name: Reset all cluster and driver nodes to clean baseline
   hosts: all

@@ -1,10 +1,5 @@
 ---
-# =============================================================================
-# server.yml — Install and initialise a WireGuard server
-#
-# Target host group : wireguard_server
-# Run               : ansible-playbook -i <inventory> server.yml
-# =============================================================================
+# Setup WireGuard server (kernel module)
 
 - name: Setup WireGuard server
   hosts: wireguard_server
@@ -100,15 +95,6 @@
         src: "{{ wg_config_dir }}/server_public.key"
         dest: "{{ playbook_dir }}/tmp/server_public.key"
         flat: true
-
-    - name: Print server WireGuard info
-      ansible.builtin.debug:
-        msg:
-          - "   WireGuard server is running"
-          - "   Tunnel IP  : {{ wg_server_wg_ip }}/24"
-          - "   Listen port: {{ wg_port }}/udp"
-          - "   Public key : {{ lookup('file', playbook_dir + '/tmp/server_public.key') }}"
-          - "   Run join-peer.yml to add peers."
 
   handlers:
     - name: Restart WireGuard

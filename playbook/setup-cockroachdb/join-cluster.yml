@@ -1,32 +1,7 @@
 ---
-# =============================================================================
-# join-cluster.yml — Join additional nodes to an existing CockroachDB cluster
-#
-# Target host groups : crdb_join  (joins)  +  crdb_main (CA / cert issuer)
-# Run               : ansible-playbook -i <inventory> join-cluster.yml
-#                   : ansible-playbook -i <inventory> join-cluster.yml -e crdb_advertise_mode=wireguard
-#
-# Scenarios (switched via vars/cockroach.yml — must match create-cluster.yml):
-#   1) direct    — joining nodes advertise via direct IP and join via
-#                  <crdb_main ansible_host / public_ip>:26257
-#   2) wireguard — joining nodes advertise via WireGuard tunnel IP and join via
-#                  <crdb_main WireGuard IP>:26257  (wg0 / wireguard-go)
-#                  Ensure WireGuard is up before running:
-#                  playbook/setup-wireguard/join-peer.yml  or
-#                  playbook/setup-wireguard-go/join-peer.yml
-#
-# Production-grade steps (mirrors scripts/install-cockroachdb.sh, secure mode):
-#   - Auto-detects advertise IP per scenario (or uses override)
-#   - Generates TLS node certs on the CA host (crdb_main) for each joining
-#     node (cockroach cert create-node) and securely distributes them
-#   - Installs binary, creates cockroach user, secures dirs, deploys systemd,
-#     joins the existing cluster.
-# =============================================================================
+# Join additional nodes to an existing CockroachDB cluster
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Play 0 — Detect advertise hosts for ALL cockroach nodes
-# Hostvars set here are re-used by Play 1 (CA cert generation) and Play 2 (join)
-# ─────────────────────────────────────────────────────────────────────────────
+# Play 0: Detect advertise hosts for ALL cockroach nodes
 - name: Detect CockroachDB advertise addresses
   hosts: crdb_main:crdb_join
   become: true
@@ -92,10 +67,6 @@
     - name: Set hostname fact for cert SANs
       ansible.builtin.set_fact:
         crdb_hostname: "{{ ansible_hostname | default(inventory_hostname) }}"
-
-    - name: Show resolved advertise address
-      ansible.builtin.debug:
-        msg: "   {{ inventory_hostname }} → {{ crdb_advertise_host }}:{{ crdb_sql_port }} (mode={{ crdb_advertise_mode }}, hostname={{ crdb_hostname }})"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Play 1 — Generate and stage TLS certificates for each joining node on the CA
@@ -286,19 +257,7 @@
         label: "{{ item }}"
       when: _crdb_client_root_key.stat.exists
 
-    - name: Print generated bundle info
-      ansible.builtin.debug:
-        msg:
-          - "   Generated cert bundle for {{ item }}"
-          - "   SANs: {{ hostvars[item].crdb_advertise_host }}, {{ hostvars[item].crdb_hostname }}, {{ item }}, localhost, 127.0.0.1{{ ', ' + (crdb_extra_sans | join(', ')) if crdb_extra_sans | length > 0 else '' }}"
-          - "   Bundle: {{ crdb_tmp_bundle_dir }}/{{ item }}/ + {{ playbook_dir }}/tmp/crdb-certs/{{ item }}/"
-      loop: "{{ groups['crdb_join'] }}"
-      loop_control:
-        label: "{{ item }}"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Play 2 — Install and join each peer to the existing cluster
-# ─────────────────────────────────────────────────────────────────────────────
+# Play 2: Install and join each peer to the existing cluster
 - name: Join CockroachDB nodes to existing cluster
   hosts: crdb_join
   become: true
@@ -316,13 +275,6 @@
         crdb_advertise_addr: "{{ crdb_advertise_host }}:{{ crdb_sql_port }}"
         crdb_http_addr: "{{ crdb_http_bind }}:{{ crdb_http_port }}"
         crdb_join_target: "{{ crdb_join_addr if crdb_join_addr is defined and crdb_join_addr | length > 0 else _crdb_bootstrap_host + ':' + crdb_sql_port | string }}"
-
-    - name: Show join configuration
-      ansible.builtin.debug:
-        msg:
-          - "   Node           : {{ inventory_hostname }} ({{ crdb_advertise_host }})"
-          - "   Advertise addr : {{ crdb_advertise_addr }}"
-          - "   Join target    : {{ crdb_join_target }} (mode={{ crdb_advertise_mode }})"
 
     - name: Create CockroachDB system group
       ansible.builtin.group:
@@ -542,14 +494,6 @@
       changed_when: false
       failed_when: false
       no_log: false
-
-    - name: Show join status
-      ansible.builtin.debug:
-        msg:
-          - "   Node {{ inventory_hostname }} joined cluster via {{ crdb_join_target }}"
-          - "   rc={{ _crdb_join_status.rc }} attempts={{ _crdb_join_status.attempts | default(1) }}"
-          - "{{ _crdb_join_status.stdout_lines | default([]) }}"
-          - "{{ _crdb_join_status.stderr_lines | default([]) }}"
 
     - name: Fail if node did not appear in cluster after retries
       ansible.builtin.fail:

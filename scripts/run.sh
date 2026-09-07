@@ -1,28 +1,5 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# scripts/run.sh — Automated End-to-End CockroachDB Replication & Benchmark Runner
-#
-# Pipeline Workflow:
-#   1. OpenTofu init & apply Azure infrastructure
-#   2. Export dynamic inventory to ./inventory.yml and playbook/inventory.yml
-#   3. Scenario 1: Direct replication
-#      - Ansible: setup-cockroachdb (create-cluster & join-cluster in direct mode)
-#      - Ansible: setup-workload-driver/setup.yml
-#      - 5 iterations: reset-data.yml -> benchmark.yml -> save & transfer to ./workload-result/direct/{iteration}
-#   4. In-place node baseline reset (playbook/reset-baseline.yml)
-#   5. Scenario 2: Kernel WireGuard
-#      - Ansible: setup-wireguard (server & join-peer)
-#      - Ansible: setup-cockroachdb (create-cluster & join-cluster in wireguard mode)
-#      - Ansible: setup-workload-driver/setup.yml
-#      - 5 iterations: reset-data.yml -> benchmark.yml -> save & transfer to ./workload-result/wireguard/{iteration}
-#   6. In-place node baseline reset (playbook/reset-baseline.yml)
-#   7. Scenario 3: Userspace WireGuard-Go
-#      - Ansible: setup-wireguard-go (server & join-peer)
-#      - Ansible: setup-cockroachdb (create-cluster & join-cluster in wireguard mode)
-#      - Ansible: setup-workload-driver/setup.yml
-#      - 5 iterations: reset-data.yml -> benchmark.yml -> save & transfer to ./workload-result/wireguard-go/{iteration}
-#   8. OpenTofu destroy Azure infrastructure
-# ==============================================================================
+# Automated End-to-End CockroachDB Replication & Benchmark Runner
 
 set -euo pipefail
 
@@ -79,14 +56,6 @@ else
   CYAN=''
   NC=''
 fi
-
-say_banner() {
-  cat <<'EOF'
-================================================================================
-   CockroachDB Multi-Region Replication & VPN Benchmark Pipeline Runner
-================================================================================
-EOF
-}
 
 say_step() {
   printf "\n${BOLD}${MAGENTA}==>${NC} ${BOLD}%s${NC}\n" "$*"
@@ -183,17 +152,7 @@ check_pipeline_state_reality() {
   fi
 
   if [[ "${group_exists}" != "true" || "${vm_count}" -eq 0 ]]; then
-    say_error "================================================================================"
-    say_error "CHECKPOINT REALITY MISMATCH DETECTED:"
-    say_error "  Checkpoint file (${STATE_FILE}) claims 'tofu_apply' is completed,"
-    say_error "  but no active Virtual Machines exist in Azure resource group '${rg}'."
-    say_error ""
-    say_error "  Resources were destroyed out-of-band while the local checkpoint was preserved."
-    say_error "  To prevent executing playbooks against non-existent hosts, please re-run with --reset:"
-    say_error ""
-    say_error "      $0 --reset"
-    say_error "================================================================================"
-    die "Stale checkpoint detected. Manual confirmation required: re-run with --reset to start fresh."
+    die "Stale checkpoint detected: '${STATE_FILE}' claims tofu_apply is done, but no active VMs exist in '${rg}'. Re-run with --reset."
   fi
 
   say_success "Infrastructure reality check passed (${vm_count} VM(s) active in '${rg}')."
@@ -288,7 +247,6 @@ save_and_transfer_benchmark() {
   fi
 
   say_success "Benchmark results successfully saved to ${dest_dir}"
-  ls -lh "${dest_dir}" | tail -n +2 | sed 's/^/    /' || true
 }
 
 ## --- Cluster Baseline Reset via Ansible (In-Place Reset) ---
@@ -323,12 +281,8 @@ reset_cluster_baseline() {
   say_success "Baseline reset complete. All nodes are clean and ready."
 }
 
-# ==============================================================================
-# Pipeline Execution
-# ==============================================================================
+# --- Pipeline Execution ---
 main() {
-  say_banner
-
   # Handle reset flag to start over from scratch
   if [[ "${1:-}" == "--reset" || "${1:-}" == "--fresh" || "${RESET:-0}" == "1" ]]; then
     say_warn "Reset flag detected. Clearing previous pipeline state..."
@@ -570,8 +524,6 @@ main() {
 
   say_step "Pipeline completed successfully!"
   say_success "All benchmarks completed and infrastructure destroyed."
-  say_info "Results summary:"
-  ls -lh "${WORKLOAD_RESULTS_DIR}" 2>/dev/null || true
 }
 
 main "$@"

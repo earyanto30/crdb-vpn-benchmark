@@ -1,15 +1,5 @@
 ---
-# =============================================================================
-# reset-data.yml — Reset TPC-C database and re-import fixtures from workload driver
-#
-# Target group : driver (vm-crdb-driver-sea-01)
-# Run         : ansible-playbook -i inventory.yml reset-data.yml
-#
-# What it does:
-#   1) Resolves cluster target host and connection variables using driver vars
-#   2) Drops existing tpcc database (DROP DATABASE IF EXISTS tpcc CASCADE)
-#   3) Re-imports TPC-C fixture at configured warehouse scale via TLS connection URI
-# =============================================================================
+# Reset TPC-C database and re-import fixtures from workload driver
 
 - name: Reset TPC-C data on cluster from workload driver
   hosts: driver

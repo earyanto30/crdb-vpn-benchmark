@@ -1,19 +1,7 @@
 ---
-# =============================================================================
-# setup.yml — Provision workload driver VM and pre-load TPC-C
-#
-# Target group : workload_driver / driver (vm-crdb-driver-sea-01)
-#               + crdb_main (for cert distribution, ephemeral)
-# Run         : ansible-playbook -i inventory.yml setup.yml
-#
-# What it does:
-#   1) Installs cockroach binary (same version as cluster, TLS-only)
-#   2) Fetches CA + client certs from crdb_main and installs to driver_certs_dir
-#   3) Verifies TLS connectivity as dbadmin/dbadmin
-#   4) Pre-loads TPC-C fixtures (warehouses=10) idempotently
-# =============================================================================
+# Provision workload driver VM and pre-load TPC-C
 
-# ── Play 0 — Stage driver certs on controller from crdb_main (CA) ──────────
+# Stage driver TLS certs on controller from crdb_main (CA)
 - name: Stage driver TLS certs from crdb_main
   hosts: crdb_main
   become: true
@@ -116,13 +104,6 @@
         driver_resolved_target: "{{ driver_target_host }}"
       when: driver_target_host is defined and driver_target_host | length > 0
 
-    - name: Show resolved target
-      ansible.builtin.debug:
-        msg:
-          - "   Driver host    : {{ inventory_hostname }} ({{ ansible_host }})"
-          - "   Cluster target : {{ driver_resolved_target }}:{{ driver_sql_port }} (TLS, user={{ driver_db_user }})"
-          - "   Warehouses     : {{ driver_tpcc_warehouses }}, Concurrency: {{ driver_tpcc_concurrency }}, Duration: {{ driver_tpcc_duration }}"
-
   tasks:
     - name: Install required packages (curl, tar, ping, jq)
       ansible.builtin.apt:
@@ -217,10 +198,6 @@
       register: _driver_ver
       changed_when: false
       failed_when: false
-
-    - name: Show version
-      ansible.builtin.debug:
-        msg: "{{ _driver_ver.stdout }}"
 
     - name: Ensure driver certs directory
       ansible.builtin.file:
@@ -328,10 +305,6 @@
           Check certs in {{ driver_certs_dir }}/ and `journalctl -u cockroachdb` on crdb_main.
       when: _driver_sql_ok.rc != 0 and (_driver_sql_ok2.rc is not defined or _driver_sql_ok2.rc != 0)
 
-    - name: Show SQL check
-      ansible.builtin.debug:
-        msg: "{{ _driver_sql_ok.stdout_lines | default(_driver_sql_ok2.stdout_lines) }}"
-
     - name: Check if TPCC already loaded (warehouse count)
       ansible.builtin.shell: |
         COCKROACH_PASSWORD='{{ driver_db_password }}' timeout 30 {{ driver_bin_path }} sql \
@@ -345,10 +318,6 @@
       changed_when: false
       failed_when: false
 
-    - name: Show TPCC count
-      ansible.builtin.debug:
-        msg: "warehouse count: {{ _tpcc_count.stdout | default('0') | trim }} (expected {{ driver_tpcc_warehouses }})"
-
     - name: Tune cluster for fast ingest (bulk I/O) before load
       ansible.builtin.shell: |
         COCKROACH_PASSWORD='{{ driver_db_password }}' {{ driver_bin_path }} sql \
@@ -360,17 +329,9 @@
       failed_when: false
       when: _tpcc_count.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
 
-    - name: Load TPCC fixtures (warehouses={{ driver_tpcc_warehouses }}) — may take 5-15 min per 10 warehouses, 30-60m for 100
+    - name: Load TPCC fixtures (warehouses={{ driver_tpcc_warehouses }})
       ansible.builtin.shell: |
         set -o pipefail
-        # Use `workload init` with INSERT loader to avoid GCS dependency.
-        # `fixtures load` requires GCS credentials (gcs http transport) and fails offline:
-        #   failed to create google cloud client ... could not find default credentials
-        # `workload init --data-loader INSERT` generates data via INSERT, no cloud needed.
-        # --drop is required to allow scaling up (10 → 100) by dropping existing tpcc db.
-        # Tuned: --workers (warehouses*10 default) and --init-conns 64 (4x default 16) maximize driver→cluster throughput.
-        # For fastest: driver_tpcc_workers=0 (auto), driver_tpcc_init_conns=64-128, driver_tpcc_data_loader=INSERT (portable) or IMPORT (GCS, ~3x faster but needs cloud creds).
-        # Optional max-rate 0 = unlimited.
         _workers_arg=""; if [ "{{ driver_tpcc_workers | default(0) }}" != "0" ]; then _workers_arg="--workers={{ driver_tpcc_workers }}"; fi
         _max_rate_arg=""; if [ "{{ driver_tpcc_max_rate | default(0) }}" != "0" ]; then _max_rate_arg="--max-rate={{ driver_tpcc_max_rate }}"; fi
         COCKROACH_PASSWORD='{{ driver_db_password }}' {{ driver_bin_path }} workload init tpcc \
@@ -380,7 +341,6 @@
           --init-conns={{ driver_tpcc_init_conns | default(64) }} \
           $_workers_arg $_max_rate_arg {{ driver_tpcc_extra_args }} \
           "postgres://{{ driver_db_user }}:{{ driver_db_password }}@{{ driver_resolved_target }}:{{ driver_sql_port }}/tpcc?sslmode=require&sslrootcert={{ driver_certs_dir }}/ca.crt" 2>&1 | tee {{ driver_results_dir }}/tpcc-load.log
-        echo "LOAD_RC:$?"
       args:
         executable: /bin/bash
       register: _tpcc_load
@@ -398,11 +358,6 @@
       changed_when: false
       failed_when: false
       when: _tpcc_count.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
-
-    - name: Show TPCC load tail (printed to terminal as requested)
-      ansible.builtin.debug:
-        msg: "{{ (_tpcc_load.stdout_lines | default([]))[-50:] }}"
-      when: _tpcc_load.stdout is defined
 
     - name: Verify TPCC load succeeded
       ansible.builtin.shell: |
@@ -424,11 +379,3 @@
       when:
         - _tpcc_count.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
         - _tpcc_verify.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
-
-    - name: Done — driver ready
-      ansible.builtin.debug:
-        msg:
-          - "Driver setup complete on {{ inventory_hostname }}"
-          - "Target: {{ driver_resolved_target }}:{{ driver_sql_port }} (TLS, {{ driver_db_user }})"
-          - "TPCC warehouses: {{ driver_tpcc_warehouses }} ({{ 'already loaded' if _tpcc_count.stdout | trim | int == driver_tpcc_warehouses | int else 'loaded now' }})"
-          - "Run: ansible-playbook -i inventory.yml benchmark.yml"

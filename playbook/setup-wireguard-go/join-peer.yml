@@ -1,31 +1,5 @@
 ---
-# =============================================================================
-# join-peer.yml — Add VMs as WireGuard peers and reconcile full mesh
-#                 (userspace wireguard-go implementation)
-#
-# Target host groups : wireguard_server + wireguard_peers
-# Run               : ansible-playbook -i <inventory> join-peer.yml
-#
-# This playbook implements a full-mesh topology: every node (server + all
-# peers) gets a [Peer] entry for every other node.
-#
-# Flow:
-#   Play 1 — on wireguard_peers: generate/fetch peer keys, install wireguard-go
-#   Play 2 — on wireguard_server: legacy hub registration (compat)
-#   Play 3 — on wireguard_server:wireguard_peers: render mesh_wg0.conf.j2
-#            on every node, re-template systemd unit with correct wg_addr,
-#            and restart wireguard-go.
-#
-# Peer tunnel IPs are auto-assigned by inventory position:
-#   first peer in wireguard_peers -> 10.10.0.2, second -> 10.10.0.3, ...
-#
-# Variables (override via -e or vars/wireguard.yml):
-#   wg_peer_wg_ip_auto   — enable auto IP assignment (default: true)
-#   wg_peer_wg_ip        — manual tunnel IP when wg_peer_wg_ip_auto=false
-#                          (single-peer mode, mirrors original playbook):
-#                            ansible-playbook join-peer.yml \
-#                              -e wg_peer_wg_ip_auto=false -e wg_peer_wg_ip=10.10.0.7
-# =============================================================================
+# Configure WireGuard peers and reconcile full mesh (userspace wireguard-go)
 
 - name: Configure WireGuard peer and register it on the server
   hosts: wireguard_peers
@@ -264,21 +238,7 @@
         extended: true
       when: _peer_exists.results[ansible_loop.index0].rc != 0
 
-    - name: Print peer registration info
-      ansible.builtin.debug:
-        msg:
-          - "   Peer registered on WireGuard server"
-          - "   Peer host      : {{ item.name }}"
-          - "   Peer tunnel IP : {{ item.wg_ip }}"
-          - "   Peer public key: {{ item.public_key }}"
-          - "   Test with      : ping {{ item.wg_ip }}"
-      loop: "{{ wg_peer_registrations }}"
-      loop_control:
-        label: "{{ item.name }}"
-
-# =============================================================================
-# Play 3 — Reconcile full mesh on every node (wireguard-go)
-# =============================================================================
+# Play 3: Reconcile full-mesh WireGuard config on all nodes (wireguard-go)
 - name: Reconcile full-mesh WireGuard config on all nodes (wireguard-go)
   hosts: wireguard_server:wireguard_peers
   become: true
@@ -358,13 +318,6 @@
         enabled: true
         state: started
         daemon_reload: true
-
-    - name: Print mesh info for this host
-      ansible.builtin.debug:
-        msg:
-          - "   Mesh config deployed on {{ inventory_hostname }} ({{ wg_mesh_ip }}) role={{ wg_role }}"
-          - "   Peers in mesh: {{ mesh_peers | rejectattr('name', 'equalto', inventory_hostname) | map(attribute='name') | join(', ') }}"
-          - "   Test mesh: ping {{ (mesh_peers | rejectattr('name', 'equalto', inventory_hostname) | first).wg_ip if (mesh_peers | length) > 1 else 'N/A' }}"
 
   handlers:
     - name: Reload systemd mesh

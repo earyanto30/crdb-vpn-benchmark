@@ -1,23 +1,5 @@
 ---
-# =============================================================================
-# create-cluster.yml — Bootstrap the first CockroachDB node (production / TLS)
-#
-# Target host group : crdb_main   (inventory: infra/azure/outputs.tf → ansible_inventory)
-# Run               : ansible-playbook -i <inventory> create-cluster.yml
-#                   : ansible-playbook -i <inventory> create-cluster.yml -e crdb_advertise_mode=wireguard
-#
-# Scenarios (switched via vars/cockroach.yml):
-#   1) direct    — --advertise-addr and --join use the node's direct/public IP
-#                   (ansible_host / public_ip / ansible_default_ipv4.address)
-#   2) wireguard — --advertise-addr and --join use the WireGuard tunnel IP
-#                   (wg0 or wireguard-go interface). Ensure WireGuard is up first:
-#                   playbook/setup-wireguard/server.yml  or
-#                   playbook/setup-wireguard-go/server.yml
-#
-# Production-grade steps (mirrors scripts/install-cockroachdb.sh):
-#   dedicated cockroach:cockroach user, secure dirs, binary download,
-#   TLS CA + node + client certs, systemd unit with hardened limits, init, dbadmin user.
-# =============================================================================
+# Bootstrap the first CockroachDB node (production / TLS)
 
 - name: Bootstrap CockroachDB cluster (production)
   hosts: crdb_main
@@ -89,14 +71,6 @@
         - crdb_advertise_mode == "direct"
         - crdb_advertise_host is not defined or crdb_advertise_host | length == 0
 
-    - name: Show resolved advertise address
-      ansible.builtin.debug:
-        msg:
-          - "   Advertise mode : {{ crdb_advertise_mode }}"
-          - "   Advertise host : {{ crdb_advertise_host }}"
-          - "   Advertise addr : {{ crdb_advertise_host }}:{{ crdb_sql_port }}"
-          - "   HTTP addr      : {{ crdb_http_bind }}:{{ crdb_http_port }}"
-
     - name: Build CockroachDB address facts
       ansible.builtin.set_fact:
         crdb_advertise_addr: "{{ crdb_advertise_host }}:{{ crdb_sql_port }}"
@@ -159,11 +133,6 @@
       changed_when: false
       failed_when: false
       when: _crdb_bin_stat.stat.exists
-
-    - name: Show existing version
-      ansible.builtin.debug:
-        msg: "Existing CockroachDB: {{ _crdb_existing_ver.stdout | default('unknown') }}"
-      when: _crdb_bin_stat.stat.exists and _crdb_existing_ver.stdout is defined
 
     - name: Create temporary download directory
       ansible.builtin.tempfile:
@@ -247,10 +216,6 @@
       register: _crdb_ver
       changed_when: false
       failed_when: false
-
-    - name: Show installed version
-      ansible.builtin.debug:
-        msg: "{{ _crdb_ver.stdout }}"
 
     - name: Check CA certificate and key
       ansible.builtin.stat:
@@ -393,10 +358,6 @@
       changed_when: "'Cluster successfully initialized' in _crdb_init.stdout"
       failed_when: false
 
-    - name: Show init result
-      ansible.builtin.debug:
-        msg: "{{ _crdb_init.stdout | default(_crdb_init.stderr) }}"
-
     - name: Verify cluster initialized (node status)
       ansible.builtin.shell: |
         {{ crdb_bin_path }} node status --certs-dir={{ crdb_certs_dir }} --host={{ crdb_advertise_host }} 2>&1
@@ -405,10 +366,6 @@
       retries: 10
       delay: 3
       changed_when: false
-
-    - name: Show node status
-      ansible.builtin.debug:
-        msg: "{{ _crdb_node_status.stdout_lines }}"
 
     - name: Wait extra seconds for SQL to be ready before creating user
       ansible.builtin.wait_for:
@@ -455,16 +412,6 @@
       run_once: true
       delegate_to: "{{ groups['cockroachdb'][0] }}"
       changed_when: true
-
-    - name: Show dbadmin creation result
-      ansible.builtin.debug:
-        msg:
-          - "   Create user output: {{ _crdb_create_user.stdout | default('') | trim }}"
-          - "   Verify user      : {{ _crdb_verify_user.stdout | default('') | trim }}"
-          - "   CockroachDB cluster ready at {{ crdb_advertise_addr }}"
-          - "   Admin UI (https): https://{{ crdb_advertise_host }}:{{ crdb_http_port }}"
-          - "   SQL : {{ crdb_bin_path }} sql --certs-dir={{ crdb_certs_dir }} --host={{ crdb_advertise_host }}"
-          - "   Join new nodes with: ansible-playbook -i <inventory> join-cluster.yml (same vars/cockroach.yml)"
 
   handlers:
     - name: Reload systemd
