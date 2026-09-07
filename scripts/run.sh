@@ -360,8 +360,6 @@ main() {
       say_info "Scenario 1 (Direct) — Benchmark Iteration ${iter}/${NUM_ITERATIONS} already completed. Skipping."
     else
       say_step "Scenario 1 (Direct) — Benchmark Iteration ${iter}/${NUM_ITERATIONS}"
-      say_info "Resetting TPC-C data before this iteration..."
-      ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/reset-data.yml"
       ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/benchmark.yml"
       save_and_transfer_benchmark "direct" "${iter}"
       mark_step_done "direct_benchmark_iter_${iter}"
@@ -430,8 +428,6 @@ main() {
       say_info "Scenario 2 (WireGuard) — Benchmark Iteration ${iter}/${NUM_ITERATIONS} already completed. Skipping."
     else
       say_step "Scenario 2 (WireGuard) — Benchmark Iteration ${iter}/${NUM_ITERATIONS}"
-      say_info "Resetting TPC-C data before this iteration..."
-      ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/reset-data.yml"
       ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/benchmark.yml"
       save_and_transfer_benchmark "wireguard" "${iter}"
       mark_step_done "wireguard_benchmark_iter_${iter}"
@@ -500,8 +496,6 @@ main() {
       say_info "Scenario 3 (WireGuard-Go) — Benchmark Iteration ${iter}/${NUM_ITERATIONS} already completed. Skipping."
     else
       say_step "Scenario 3 (WireGuard-Go) — Benchmark Iteration ${iter}/${NUM_ITERATIONS}"
-      say_info "Resetting TPC-C data before this iteration..."
-      ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/reset-data.yml"
       ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/benchmark.yml"
       save_and_transfer_benchmark "wireguard-go" "${iter}"
       mark_step_done "wireguard_go_benchmark_iter_${iter}"

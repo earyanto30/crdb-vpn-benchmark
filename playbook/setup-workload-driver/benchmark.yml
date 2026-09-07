@@ -1,5 +1,5 @@
 ---
-# Run TPC-C workload from workload driver
+# Reset TPC-C data, load fixtures, and run benchmark from workload driver
 
 - name: Run TPC-C benchmark (cockroach workload, TLS)
   hosts: workload_driver
@@ -45,23 +45,61 @@
         port: "{{ driver_sql_port }}"
         timeout: 60
 
-    - name: Verify TPCC data present before run
+    - name: Tune cluster for fast ingest (bulk I/O) before load
       ansible.builtin.shell: |
-        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout 15 {{ driver_bin_path }} sql \
+        COCKROACH_PASSWORD='{{ driver_db_password }}' {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} --host={{ driver_resolved_target }}:{{ driver_sql_port }} --user={{ driver_db_user }} \
+          --execute="SET CLUSTER SETTING bulkio.backup.proxy_file_writes.enabled = off; SET CLUSTER SETTING kv.bulk_io_write.max_rate = '2GiB'; SET CLUSTER SETTING kv.bulk_io_write.concurrent_addsstable_requests = 64;" 2>&1 | tail -n 5
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+
+    - name: Load TPCC fixtures (warehouses={{ driver_tpcc_warehouses }})
+      ansible.builtin.shell: |
+        set -o pipefail
+        _workers_arg=""; if [ "{{ driver_tpcc_workers | default(0) }}" != "0" ]; then _workers_arg="--workers={{ driver_tpcc_workers }}"; fi
+        _max_rate_arg=""; if [ "{{ driver_tpcc_max_rate | default(0) }}" != "0" ]; then _max_rate_arg="--max-rate={{ driver_tpcc_max_rate }}"; fi
+        COCKROACH_PASSWORD='{{ driver_db_password }}' {{ driver_bin_path }} workload init tpcc \
+          --drop \
+          --data-loader {{ driver_tpcc_data_loader | default('INSERT') }} \
+          --warehouses={{ driver_tpcc_warehouses }} \
+          --init-conns={{ driver_tpcc_init_conns | default(64) }} \
+          $_workers_arg $_max_rate_arg {{ driver_tpcc_extra_args }} \
+          "postgres://{{ driver_db_user }}:{{ driver_db_password }}@{{ driver_resolved_target }}:{{ driver_sql_port }}/tpcc?sslmode=require&sslrootcert={{ driver_certs_dir }}/ca.crt" 2>&1 | tee {{ driver_results_dir }}/tpcc-load.log
+      args:
+        executable: /bin/bash
+      register: _tpcc_load
+      changed_when: "'init completed' in _tpcc_load.stdout or 'Load finished' in _tpcc_load.stdout or _tpcc_load.rc == 0"
+      failed_when: false
+
+    - name: Restore cluster bulk settings after load
+      ansible.builtin.shell: |
+        COCKROACH_PASSWORD='{{ driver_db_password }}' {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} --host={{ driver_resolved_target }}:{{ driver_sql_port }} --user={{ driver_db_user }} \
+          --execute="SET CLUSTER SETTING bulkio.backup.proxy_file_writes.enabled = default; SET CLUSTER SETTING kv.bulk_io_write.max_rate = default; SET CLUSTER SETTING kv.bulk_io_write.concurrent_addsstable_requests = default;" 2>&1 | tail -n 5
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+
+    - name: Verify TPCC load succeeded
+      ansible.builtin.shell: |
+        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout 30 {{ driver_bin_path }} sql \
           --certs-dir={{ driver_certs_dir }} \
           --host={{ driver_resolved_target }}:{{ driver_sql_port }} \
           --user={{ driver_db_user }} \
           --execute="SELECT count(*) FROM tpcc.warehouse;" 2>&1 | tr -d ' \r' | grep -E '^[0-9]+$' | tail -n1
       args:
         executable: /bin/bash
-      register: _bench_warehouses
+      register: _tpcc_verify
       changed_when: false
       failed_when: false
 
-    - name: Fail if TPCC not loaded
+    - name: Fail if TPCC warehouses != expected after load
       ansible.builtin.fail:
-        msg: "TPCC not loaded (warehouses={{ _bench_warehouses.stdout | trim }}, expected {{ driver_tpcc_warehouses }}). Run setup.yml first."
-      when: _bench_warehouses.stdout | trim | int != driver_tpcc_warehouses | int
+        msg: "TPCC load failed — expected {{ driver_tpcc_warehouses }} warehouses, got {{ _tpcc_verify.stdout | default('?') }}. See {{ driver_results_dir }}/tpcc-load.log"
+      when: _tpcc_verify.stdout | default('0') | trim | int != driver_tpcc_warehouses | int
 
     - name: Build workload URI and file names (single timestamp for log+hist)
       ansible.builtin.set_fact:
