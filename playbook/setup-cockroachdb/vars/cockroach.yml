@@ -23,6 +23,10 @@ crdb_http_port: 8080
 # Bind for Admin UI. 0.0.0.0 = remote access, 127.0.0.1 = localhost only.
 crdb_http_bind: "0.0.0.0"
 
+# ── Authentication / TLS flag ──────────────────────────────────────────────
+# Passed to cockroach CLI commands (e.g. cockroach sql {{ crdb_auth_flag }})
+crdb_auth_flag: "--certs-dir={{ crdb_certs_dir }}"
+
 # ── Systemd ────────────────────────────────────────────────────────────────
 crdb_service_name: cockroachdb
 

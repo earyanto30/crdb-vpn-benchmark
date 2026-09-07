@@ -8,19 +8,19 @@
 #   3. Scenario 1: Direct replication
 #      - Ansible: setup-cockroachdb (create-cluster & join-cluster in direct mode)
 #      - Ansible: setup-workload-driver/setup.yml
-#      - 5 iterations: benchmark.yml -> save & transfer to ./workload-result/direct/{iteration}
+#      - 5 iterations: reset-data.yml -> benchmark.yml -> save & transfer to ./workload-result/direct/{iteration}
 #   4. In-place node baseline reset (playbook/reset-baseline.yml)
 #   5. Scenario 2: Kernel WireGuard
 #      - Ansible: setup-wireguard (server & join-peer)
 #      - Ansible: setup-cockroachdb (create-cluster & join-cluster in wireguard mode)
 #      - Ansible: setup-workload-driver/setup.yml
-#      - 5 iterations: benchmark.yml -> save & transfer to ./workload-result/wireguard/{iteration}
+#      - 5 iterations: reset-data.yml -> benchmark.yml -> save & transfer to ./workload-result/wireguard/{iteration}
 #   6. In-place node baseline reset (playbook/reset-baseline.yml)
 #   7. Scenario 3: Userspace WireGuard-Go
 #      - Ansible: setup-wireguard-go (server & join-peer)
 #      - Ansible: setup-cockroachdb (create-cluster & join-cluster in wireguard mode)
 #      - Ansible: setup-workload-driver/setup.yml
-#      - 5 iterations: benchmark.yml -> save & transfer to ./workload-result/wireguard-go/{iteration}
+#      - 5 iterations: reset-data.yml -> benchmark.yml -> save & transfer to ./workload-result/wireguard-go/{iteration}
 #   8. OpenTofu destroy Azure infrastructure
 # ==============================================================================
 
@@ -406,6 +406,8 @@ main() {
       say_info "Scenario 1 (Direct) — Benchmark Iteration ${iter}/${NUM_ITERATIONS} already completed. Skipping."
     else
       say_step "Scenario 1 (Direct) — Benchmark Iteration ${iter}/${NUM_ITERATIONS}"
+      say_info "Resetting TPC-C data before this iteration..."
+      ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/reset-data.yml"
       ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/benchmark.yml"
       save_and_transfer_benchmark "direct" "${iter}"
       mark_step_done "direct_benchmark_iter_${iter}"
@@ -474,6 +476,8 @@ main() {
       say_info "Scenario 2 (WireGuard) — Benchmark Iteration ${iter}/${NUM_ITERATIONS} already completed. Skipping."
     else
       say_step "Scenario 2 (WireGuard) — Benchmark Iteration ${iter}/${NUM_ITERATIONS}"
+      say_info "Resetting TPC-C data before this iteration..."
+      ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/reset-data.yml"
       ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/benchmark.yml"
       save_and_transfer_benchmark "wireguard" "${iter}"
       mark_step_done "wireguard_benchmark_iter_${iter}"
@@ -542,6 +546,8 @@ main() {
       say_info "Scenario 3 (WireGuard-Go) — Benchmark Iteration ${iter}/${NUM_ITERATIONS} already completed. Skipping."
     else
       say_step "Scenario 3 (WireGuard-Go) — Benchmark Iteration ${iter}/${NUM_ITERATIONS}"
+      say_info "Resetting TPC-C data before this iteration..."
+      ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/reset-data.yml"
       ansible-playbook -i "${INVENTORY}" "${PLAYBOOK_DIR}/setup-workload-driver/benchmark.yml"
       save_and_transfer_benchmark "wireguard-go" "${iter}"
       mark_step_done "wireguard_go_benchmark_iter_${iter}"

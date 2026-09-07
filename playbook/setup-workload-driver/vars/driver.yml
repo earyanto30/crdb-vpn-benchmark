@@ -20,6 +20,11 @@ driver_http_port: 8080
 # Driver reuses cluster CA + client certs. Certs are fetched from crdb_main
 # via Ansible and placed here. Must be readable by ansible_user.
 driver_certs_dir: /home/evan/cockroach-certs
+# Authentication flag for cockroach CLI commands
+crdb_auth_flag: "--certs-dir={{ driver_certs_dir }}"
+crdb_sql_port: "{{ driver_sql_port }}"
+tpcc_warehouses: "{{ driver_tpcc_warehouses }}"
+crdb_host: "{{ driver_target_host }}"
 # Temporary staging on CA / controller (mirrors setup-cockroachdb)
 driver_tmp_bundle_dir: /tmp/crdb-driver-certs
 
