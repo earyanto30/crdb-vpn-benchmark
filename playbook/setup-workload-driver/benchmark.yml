@@ -1,5 +1,5 @@
 ---
-# Reset TPC-C data, load fixtures, and run benchmark from workload driver
+# Load TPC-C fixtures, run benchmark, and clean up data from workload driver
 
 - name: Run TPC-C benchmark (cockroach workload, TLS)
   hosts: workload_driver
@@ -217,3 +217,14 @@
         dest: "{{ playbook_dir }}/tmp/benchmark-raw-{{ _bench_ts }}.csv"
         flat: true
       failed_when: false
+
+    - name: Drop TPCC database after benchmark run
+      ansible.builtin.shell: |
+        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout 60 {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} \
+          --host={{ driver_resolved_target }}:{{ driver_sql_port }} \
+          --user={{ driver_db_user }} \
+          --execute="DROP DATABASE IF EXISTS tpcc CASCADE;"
+      args:
+        executable: /bin/bash
+      changed_when: true
