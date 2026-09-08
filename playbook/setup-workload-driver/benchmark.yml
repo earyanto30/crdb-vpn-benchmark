@@ -73,6 +73,17 @@
       changed_when: "'init completed' in _tpcc_load.stdout or 'Load finished' in _tpcc_load.stdout or _tpcc_load.rc == 0"
       failed_when: false
 
+    - name: Set short GC TTL
+      ansible.builtin.shell: |
+        COCKROACH_PASSWORD='{{ driver_db_password }}' timeout 30 {{ driver_bin_path }} sql \
+          --certs-dir={{ driver_certs_dir }} \
+          --host={{ driver_resolved_target }}:{{ driver_sql_port }} \
+          --user={{ driver_db_user }} \
+          --execute="ALTER DATABASE tpcc CONFIGURE ZONE USING gc.ttlseconds = 600;"
+      args:
+        executable: /bin/bash
+      changed_when: true
+
     - name: Restore cluster bulk settings after load
       ansible.builtin.shell: |
         COCKROACH_PASSWORD='{{ driver_db_password }}' {{ driver_bin_path }} sql \
